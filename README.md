@@ -73,6 +73,7 @@ This project integrates advanced stochastic calculus with modern generative mode
 ### 🛠 Prerequisites
 *   **Python 3.10+** environment.
 *   Scientific computing stack: `numpy`, `scipy`, `torch`, `matplotlib`.
+*   See more on `requirements.txt`.
 
 ### 📥 Installation
 
