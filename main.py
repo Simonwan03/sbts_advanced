@@ -1,171 +1,106 @@
 import numpy as np
-import torch
-from core.bandwidth import BandwidthSelector
-from core.lightsb import LightSBTrainer
-from core.reference import LocalVolatility, LevyProcess, modified_drift_adjustment
-from core.solver import euler_maruyama_generator
-from models.jumps import JumpDetector
-
-import numpy as np
-import torch
 import os
 
-# Importing Core Modules
-from core.bandwidth import BandwidthSelector
-from core.lightsb import LightSBTrainer
-from core.reference import LocalVolatility, LevyProcess, modified_drift_adjustment
+# Core Modules
+from core.reference import LevyProcess
 from core.solver import euler_maruyama_generator
+from core.drift_estimators import KernelDriftEstimator, LSTMDriftEstimator
 from models.jumps import JumpDetector
-
-# Importing Visualization
+# 引入新的统一绘图接口
 from utils.visualization import (
-    plot_trajectories, 
-    plot_bandwidth_optimization, 
-    plot_marginal_density,
-    plot_jump_detection
+    plot_bandwidth_optimization,
+    plot_jump_detection,
+    plot_method_comparison
 )
 
 def main():
     print("==========================================")
-    print("   Advanced SBTS Framework Initialized    ")
+    print("   SBTS Advanced: Final Comparison        ")
     print("==========================================\n")
     
-    # Output directory for plots
-    os.makedirs("outputs", exist_ok=True)
-    
     # ---------------------------------------------------------
-    # 1. Data Loading (Mock Synthetic Data: OU Process with Jumps)
+    # 1. Data Generation (High Density)
     # ---------------------------------------------------------
-    T, N_samples = 1.0, 1000
-    steps = 252
+    T, N_samples = 1.0, 10000 
+    steps = 50
     time_grid = np.linspace(0, T, steps)
     dt = T / (steps - 1)
     
-    # Create Synthetic Data: OU dX = -2X dt + dW + Jumps
-    print(f"Loading {N_samples} sample trajectories...")
+    print(f"Generating {N_samples} Synthetic OU Trajectories...")
     data = np.zeros((N_samples, steps, 1))
     for i in range(N_samples):
-        x = 0.0
+        x = np.random.normal(0, 0.4)
         for t_idx in range(1, steps):
-            # Normal OU
-            dx = -2.0 * x * dt + np.sqrt(dt) * np.random.randn()
-            # Random sparse jumps
-            if np.random.random() < (5.0 * dt): # Lambda ~ 5
-                dx += np.random.normal(0, 0.5) 
+            # OU Process: dX = -2X dt + 0.5 dW + Jumps
+            dx = -2.0 * x * dt + 0.5 * np.sqrt(dt) * np.random.randn()
+            if np.random.random() < (0.5 * dt): 
+                dx += np.random.choice([0.6, -0.6])
             x += dx
             data[i, t_idx, 0] = x
             
-    print(f"Data Shape: {data.shape}")
+    # ---------------------------------------------------------
+    # 2. Estimator Training
+    # ---------------------------------------------------------
+    
+    # --- A. Kernel ---
+    print("\n[Estimator 1] Fitting Kernel Drift...")
+    kernel_est = KernelDriftEstimator(bandwidth=0.1)
+    kernel_est.fit(data, dt)
+    
+    # --- B. LSTM ---
+    print("\n[Estimator 2] Training LSTM Drift...")
+    lstm_est = LSTMDriftEstimator(input_dim=1, hidden_size=64, lr=0.01, epochs=50, dt=dt)
+    lstm_est.fit(data, dt)
 
     # ---------------------------------------------------------
-    # Enhancement 1: Adaptive Bandwidth Selection
+    # 3. Generation (with Temperature Scaling)
     # ---------------------------------------------------------
-    print("\n[Phase 1] Tuning Bandwidth (Cross-Validation)...")
-    selector = BandwidthSelector(candidates=np.logspace(-2, 0, 20), n_splits=3)
+    print("\n[Generation] Simulating paths...")
+    SIGMA_SCALE = 1.4
     
-    # Mock definitions for selector to work quickly without full training
-    def mock_drift_est(d, h): return lambda t, x: -2.0*x # Known ground truth for mock
-    def mock_sim(start, drift): return start * np.exp(-2.0 * 1.0) # Decay
+    class ScaledRef(LevyProcess):
+        def get_diffusion(self, t, x):
+            return self.sigma * SIGMA_SCALE
+
+    ref_process = ScaledRef(0.5, 0, lambda:0) # Base sigma matches data (0.5)
+    test_x0 = data[:1000, 0, :]
     
-    best_h = selector.fit(data, mock_drift_est, mock_sim)
+    # Wrapper functions for solver
+    def kernel_func(t, x): return kernel_est.predict(t, x)
+    def lstm_func(t, x): return lstm_est.predict(t, x)
     
-    # Plot Bandwidth Optimization
-    plot_bandwidth_optimization(
-        selector.mse_history, 
-        best_h, 
-        save_path="outputs/1_bandwidth_cv.png"
+    paths_kernel = euler_maruyama_generator(
+        test_x0, time_grid, kernel_func, ref_process, n_paths=1000
     )
     
+    paths_lstm = euler_maruyama_generator(
+        test_x0, time_grid, lstm_func, ref_process, n_paths=1000
+    )
+
     # ---------------------------------------------------------
-    # Enhancement 2: LightSB (Long Sequences)
+    # 4. Visualization (Unified)
     # ---------------------------------------------------------
-    print("\n[Phase 2] Training LightSB GMM Potential...")
-    lsb_trainer = LightSBTrainer(dim=1, n_components=10)
+    print("\n[Visualization] Producing Reports...")
     
-    # Convert data ends to Torch for training
-    x0_torch = torch.tensor(data[:, 0, :], dtype=torch.float32)
-    x1_torch = torch.tensor(data[:, -1, :], dtype=torch.float32)
-    
-    # Quick Training Loop
-    losses = []
-    for _ in range(50): # 50 steps for demo
-        loss = lsb_trainer.train_step(x0_torch, x1_torch)
-        losses.append(loss)
-        
-    print(f"Final LightSB Loss: {losses[-1]:.4f}")
-    
-    # ---------------------------------------------------------
-    # Enhancement 4: Jump Handling
-    # ---------------------------------------------------------
-    print("\n[Phase 4] Detecting Jumps & Calibration...")
-    # Analyze the first path for visualization
-    sample_returns = np.diff(data[0, :, 0])
+    # Example 1: Jump Detection Plot (Using just the first trace)
     detector = JumpDetector(dt=dt, threshold_multiplier=3.0)
-    jump_params = detector.fit_detect(sample_returns)
-    
-    print(f"Detected Jump Intensity (Lambda): {jump_params['lambda']:.4f}")
-    
-    # Plot Jump Detection
+    returns = np.diff(data[0, :, 0])
+    jump_res = detector.fit_detect(returns)
     plot_jump_detection(
+        time_grid, data[0,:,0], jump_res['indices'], 
+        save_path="outputs/analysis_jump_detection.png"
+    )
+    
+    # Example 2: Method Comparison (The Big Plot)
+    plot_method_comparison(
         time_grid, 
-        data[0, :, 0], 
-        jump_params['indices'], 
-        save_path="outputs/2_jump_detection.png"
-    )
-    
-    # ---------------------------------------------------------
-    # Generation & Visualization
-    # ---------------------------------------------------------
-    print("\n[Generation] Generating New Trajectories...")
-    
-    # Setup Levy Reference Process
-    def jump_dist_sampler(): 
-        return np.random.normal(jump_params['mu_jump'], max(0.1, jump_params['sigma_jump']))
-        
-    ref_process = LevyProcess(
-        base_sigma=1.0, 
-        intensity_lambda=jump_params['lambda'], 
-        jump_dist_func=jump_dist_sampler
-    )
-    
-    # Define Drift Function (combining LightSB + Phase 3 Adjustment)
-    def drift_fn(t, x):
-        # 1. Get Gradient from LightSB
-        grad_log_v = lsb_trainer.get_drift(t, x)
-        # 2. Adjust using Reference (Phase 3 logic)
-        return modified_drift_adjustment(ref_process, lambda t_in, x_in: grad_log_v, t, x)
-    
-    # Generate 100 paths for valid distribution comparison
-    gen_paths = euler_maruyama_generator(
-        x0=data[:100, 0, :], # Start from same initial distribution
-        time_grid=time_grid, 
-        drift_func=drift_fn, 
-        reference_process=ref_process, 
-        n_paths=100
-    )
-    
-    print(f"Generated Shape: {gen_paths.shape}")
-    
-    # ---------------------------------------------------------
-    # Final Plots
-    # ---------------------------------------------------------
-    print("\n[Visualization] Saving Comparison Plots...")
-    
-    plot_trajectories(
-        time_grid, 
-        data[:100], 
-        gen_paths, 
-        save_path="outputs/3_trajectory_comparison.png"
-    )
-    
-    plot_marginal_density(
         data, 
-        gen_paths, 
-        t_step=-1, 
-        save_path="outputs/4_terminal_density.png"
+        paths_kernel, 
+        paths_lstm, 
+        save_path="outputs/final_method_comparison.png"
     )
     
-    print("\nAll tasks completed successfully. Check 'outputs/' folder.")
+    print("\nDone. All plots saved to 'outputs/' directory.")
 
 if __name__ == "__main__":
     main()
