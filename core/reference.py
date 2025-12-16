@@ -4,12 +4,10 @@ from abc import ABC, abstractmethod
 class ReferenceMeasure(ABC):
     @abstractmethod
     def get_diffusion(self, t, x):
-        """Returns sigma(t, x)"""
         pass
     
     @abstractmethod
     def sample_jump(self, t, dt):
-        """Returns jump size dJ"""
         return 0.0
 
 class BrownianMotion(ReferenceMeasure):
@@ -50,6 +48,25 @@ class LevyProcess(ReferenceMeasure):
         if np.random.random() < (self.lamb * dt):
             return self.jump_dist()
         return 0.0
+    
+class LocalVolatilityReference(ReferenceMeasure):
+    """
+    Phase 3: Reference measure using calibrated Local Volatility surface.
+    """
+    def __init__(self, calibrator, volatility_multiplier=1.0):
+        self.calibrator = calibrator
+        self.multiplier = volatility_multiplier # Corresponds to Temperature Scaling
+        
+    def get_diffusion(self, t, x):
+        # x shape (D,) usually from solver
+        # Predict returns (1, D) or (D,)
+        vol = self.calibrator.predict(t, x)
+        
+        # Apply temperature scaling (multiplier)
+        return vol.flatten() * self.multiplier
+        
+    def sample_jump(self, t, dt):
+        return 0.0 # Standard LV has no jumps, can be extended if needed
 
 def modified_drift_adjustment(reference: ReferenceMeasure, drift_kernel_est, t, x):
     """
