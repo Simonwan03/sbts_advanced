@@ -6,7 +6,7 @@
 
 > **Projet Scientifique Collectif (PSC)**  
 > **Institution:** École Polytechnique (IP Paris)  
-> **Academic Year:** 2024-2025
+> **Academic Year:** 2025-2026
 ---
 
 ## 👥 Authors & Supervision
