@@ -39,6 +39,7 @@ The codebase is organized into modular components for scalability and research e
 sbts_advanced/
 ├── core/                   # Core algorithms and SDE solvers
 │   ├── bandwidth.py        # Adaptive CV Bandwidth selection for density estimation
+│   ├── drift_estimators.py # Drift Estimation algorithms (e.g., Kernel, LSTM)
 │   ├── lightsb.py          # LightSB implementation (GMM Parameterization)
 │   ├── reference.py        # Reference measures (Levy Processes, Stoch Vol)
 │   └── solver.py           # Euler-Maruyama solver with Jump-Diffusion support
