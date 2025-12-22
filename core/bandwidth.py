@@ -1,73 +1,126 @@
 import numpy as np
 from sklearn.model_selection import KFold
 import logging
+import optuna
+import sys
+
+# 获取项目统一的 logger
+logger = logging.getLogger("SBTS")
+
+# 抑制 Optuna 自身的繁琐日志，只保留 Warning 以上，除非我们需要调试
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def silverman_rule(data):
+    """
+    Calculates bandwidth using Silverman's Rule of Thumb.
+    """
+    n = len(data)
+    sigma = np.std(data)
+    # 防止 sigma 为 0
+    if sigma < 1e-8: sigma = 1.0
+    h = 1.06 * sigma * (n ** (-0.2))
+    return h
 
 class BandwidthSelector:
     """
-    Implements Adaptive Bandwidth Selection via Cross-Validation.
-    Objectives: Replace Silverman's rule, minimize prediction error on test sets.
+    Implements Adaptive Bandwidth Selection via Bayesian Optimization (Optuna).
     """
-    def __init__(self, candidates=None, n_splits=5):
-        # As per PDF: np.logspace(-2, 1, 50)
-        self.candidates = candidates if candidates is not None else np.logspace(-2, 1, 50)
+    def __init__(self, n_trials=20, n_splits=3):
+        self.n_trials = n_trials
         self.n_splits = n_splits
         self.best_h = None
-        self.mse_history = {}
+        self.study = None # 保存 Optuna 的 study 对象
 
     def compute_terminal_mse(self, generated_terminal, actual_terminal):
         """
         Metric: Minimize Mean Squared Error (MSE) of terminal values.
-        MSE_h = (1/Q) * Sum_q [(1/L) * Sum_l (Y_hat - Y)^2]
         """
-        # generated_terminal shape: (n_validation_samples, n_generated_per_sample)
-        # actual_terminal shape: (n_validation_samples,)
-        
-        # Expand actual to match generated shape for vectorized calc
-        actual_expanded = actual_terminal[:, np.newaxis]
-        
-        squared_diffs = (generated_terminal - actual_expanded) ** 2
-        mse = np.mean(squared_diffs)
-        return mse
+        # generated: (N_val, N_paths_per_sample, D)
+        gen_mean = np.mean(generated_terminal, axis=1) # (N_val, D)
+        squared_diffs = (gen_mean - actual_terminal) ** 2
+        return np.mean(squared_diffs)
 
-    def fit(self, trajectories, drift_estimator_func, simulator_func):
+    def fit(self, trajectories, drift_estimator_cls, simulator_func, dt):
         """
-        Grid search over bandwidth space.
+        Bayesian Optimization to find optimal h.
+        """
+        # 1. Determine Search Space using Silverman
+        flat_data = trajectories.flatten()
+        h_base = silverman_rule(flat_data)
         
-        trajectories: (N, T, D) array of training paths
-        drift_estimator_func: function(data, h) -> drift_fn
-        simulator_func: function(start_points, drift_fn) -> terminal_values
-        """
+        # Search range: [0.1 * silverman, 10 * silverman]
+        search_low = h_base * 0.1
+        search_high = h_base * 10.0
+        
+        logger.info(f"   [BayesOpt] Base h={h_base:.4f}. Search Space: [{search_low:.5f}, {search_high:.5f}]")
+        
+        # 2. Prepare Data (Subsample if too large)
+        n_total = len(trajectories)
+        if n_total > 500:
+            indices = np.random.choice(n_total, 500, replace=False)
+            subset_traj = trajectories[indices]
+        else:
+            subset_traj = trajectories
+            
         kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
         
-        # Flatten trajectories for splitting if necessary, or split by ID
-        n_trajs = trajectories.shape[0]
-        indices = np.arange(n_trajs)
-        
-        scores = {h: [] for h in self.candidates}
-
-        for train_idx, val_idx in kf.split(indices):
-            train_data = trajectories[train_idx]
-            val_data = trajectories[val_idx]
+        # 3. Define Objective Function for Optuna
+        def objective(trial):
+            # Suggest a value for h in log domain (smart sampling)
+            h = trial.suggest_float("h", search_low, search_high, log=True)
             
-            val_start_points = val_data[:, 0, :]
-            val_terminal_actual = val_data[:, -1, :]
-
-            for h in self.candidates:
-                # 1. Build drift with candidate h
-                drift_fn = drift_estimator_func(train_data, h)
+            fold_mses = []
+            
+            for train_idx, val_idx in kf.split(subset_traj):
+                train_data = subset_traj[train_idx]
+                val_data = subset_traj[val_idx]
                 
-                # 2. Simulate trajectories using validation start points
-                # Returns shape (n_val, n_samples_per_traj, D)
-                gen_terminal = simulator_func(val_start_points, drift_fn)
+                val_start = val_data[:, 0, :]
+                val_actual = val_data[:, -1, :]
                 
-                # 3. Compute MSE
-                mse = self.compute_terminal_mse(gen_terminal, val_terminal_actual)
-                scores[h].append(mse)
+                # A. Fit
+                try:
+                    estimator = drift_estimator_cls(bandwidth=h)
+                    estimator.fit(train_data, dt)
+                    
+                    # B. Simulate
+                    # simulator_func handles batch generation
+                    gen_paths = simulator_func(val_start, estimator.predict)
+                    
+                    # C. Evaluate
+                    mse = self.compute_terminal_mse(gen_paths[:, -1, :][:, np.newaxis, :], val_actual)
+                    fold_mses.append(mse)
+                except Exception as e:
+                    # If simulation fails (e.g. divergence), return infinity
+                    return float('inf')
 
-        # Average scores and find min
-        avg_scores = {h: np.mean(val) for h, val in scores.items()}
-        self.best_h = min(avg_scores, key=avg_scores.get)
-        self.mse_history = avg_scores
+            avg_mse = np.mean(fold_mses)
+            
+            # Simple progress logging
+            # print(f"      Trial {trial.number}: h={h:.5f}, MSE={avg_mse:.6f}")
+            return avg_mse
+
+        # 4. Run Optimization
+        logger.info(f"   [BayesOpt] Starting optimization with {self.n_trials} trials...")
+        self.study = optuna.create_study(direction="minimize")
+        self.study.optimize(objective, n_trials=self.n_trials)
         
-        logging.info(f"Optimal Bandwidth selected: {self.best_h:.4f}")
+        self.best_h = self.study.best_params["h"]
+        best_mse = self.study.best_value
+        
+        logger.info(f"   [BayesOpt] Best Bandwidth Found: {self.best_h:.5f} (MSE: {best_mse:.6f})")
+        
         return self.best_h
+    
+    def get_history(self):
+        """Returns history for visualization: dict {h: mse}"""
+        if self.study is None:
+            return {}
+        # Extract trials
+        trials = self.study.trials
+        # Filter completed trials
+        valid_trials = [t for t in trials if t.state == optuna.trial.TrialState.COMPLETE]
+        
+        # Sort by h for plotting
+        history = {t.params['h']: t.value for t in valid_trials}
+        return history

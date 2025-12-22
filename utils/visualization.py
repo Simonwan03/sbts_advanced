@@ -79,7 +79,7 @@ def plot_bandwidth_optimization(mse_history, selected_h, save_path="outputs/band
     ax.set_xscale('log')
     ax.set_xlabel("Bandwidth (h)")
     ax.set_ylabel("CV MSE (Terminal)")
-    ax.set_title("Adaptive Bandwidth Selection", fontweight='bold', pad=15)
+    ax.set_title("Adaptive Bandwidth Selection (Bayes Opt)", fontweight='bold', pad=15)
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)
     sns.despine()
@@ -116,8 +116,8 @@ def plot_jump_detection(time_grid, path, jump_indices, save_path="outputs/jump_d
 
 def plot_method_comparison(time_grid, real_data, kernel_paths, lstm_paths, save_path="outputs/comparison.png"):
     """
-    Comparison Plot: Real vs Kernel vs LSTM.
-    Includes NaN safety checks to prevent blank plots.
+    Comparison Plot: Real vs Kernel vs LSTM (Returns/State Space).
+    Includes NaN safety checks.
     """
     set_style()
     _ensure_dir(save_path)
@@ -125,11 +125,9 @@ def plot_method_comparison(time_grid, real_data, kernel_paths, lstm_paths, save_
     # --- SAFETY: Filter NaNs ---
     def clean_paths(paths):
         if np.isnan(paths).any():
-            print(f"[Warning] NaNs detected in generated paths. Filtering corrupted trajectories...")
             # Keep only paths that have NO NaNs across all time steps
             mask = ~np.isnan(paths).any(axis=(1, 2))
             cleaned = paths[mask]
-            print(f"   Dropped {len(paths) - len(cleaned)} bad paths. Remaining: {len(cleaned)}")
             return cleaned
         return paths
 
@@ -137,18 +135,16 @@ def plot_method_comparison(time_grid, real_data, kernel_paths, lstm_paths, save_
     lstm_paths = clean_paths(lstm_paths)
     
     if len(kernel_paths) == 0 or len(lstm_paths) == 0:
-        print("[Error] All paths corrupted. Cannot plot.")
         return
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
     # --- 1. Trajectory Mean ---
-    # Use nanmean for extra safety
     real_mean = np.nanmean(real_data[:,:,0], axis=0)
     kernel_mean = np.nanmean(kernel_paths[:,:,0], axis=0)
     lstm_mean = np.nanmean(lstm_paths[:,:,0], axis=0)
     
-    # Plot a few transparency paths
+    # Plot faint paths
     axes[0].plot(time_grid, kernel_paths[0:15,:,0].T, color='#4DBBD5', alpha=0.15)
     
     axes[0].plot(time_grid, real_mean, 'k--', linewidth=2.5, label='Real')
@@ -195,6 +191,46 @@ def plot_method_comparison(time_grid, real_data, kernel_paths, lstm_paths, save_
     axes[2].legend()
     axes[2].grid(True, alpha=0.2)
 
+    sns.despine()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+def plot_price_reconstruction(real_prices, gen_prices, method_name, ticker, save_path="outputs/prices.png"):
+    """
+    Plots reconstructed asset prices (Real vs Generated).
+    Used for converting Log Returns back to Price paths.
+    """
+    set_style()
+    _ensure_dir(save_path)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Number of paths to visualize
+    n_total = real_prices.shape[0]
+    n_plot = min(50, n_total)
+    
+    # 1. Plot subset of Real Prices (Gray background)
+    ax.plot(real_prices[:n_plot, :, 0].T, color='gray', alpha=0.1, linewidth=0.8)
+    
+    # 2. Plot subset of Generated Prices (Colored)
+    # Use Red (#E64B35) for LSTM/Gen usually
+    ax.plot(gen_prices[:min(10, n_total), :, 0].T, color='#E64B35', alpha=0.6, linewidth=1.0)
+    
+    # 3. Plot Means
+    real_mean = np.mean(real_prices, axis=0).flatten()
+    gen_mean = np.mean(gen_prices, axis=0).flatten()
+    
+    ax.plot(real_mean, 'k--', linewidth=2.0, label='Real Mean Price')
+    ax.plot(gen_mean, color='#E64B35', linewidth=2.0, label=f'{method_name} Mean Price')
+    
+    ax.set_title(f"Reconstructed Price Paths ({ticker})", fontweight='bold')
+    ax.set_xlabel("Time Steps (Days)")
+    ax.set_ylabel("Price (Normalized)")
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.2)
+    
     sns.despine()
     plt.tight_layout()
     plt.savefig(save_path)
