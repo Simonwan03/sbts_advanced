@@ -1,0 +1,31 @@
+{
+    "USE_REAL_DATA": true,
+    "TICKERS": [
+        "SPY",
+        "QQQ"
+    ],
+    "START_DATE": "2020-01-01",
+    "END_DATE": "2023-12-31",
+    "SEQ_LEN": 60,
+    "ESTIMATOR_TYPE": "TRANSFORMER",
+    "USE_JUMPS": true,
+    "JUMP_THRESHOLD_STD": 4.0,
+    "VOL_BANDWIDTH": 0.5,
+    "USE_CV_FOR_KERNEL": false,
+    "KERNEL_BANDWIDTH": 0.05,
+    "KERNEL_TEMP_SCALE": 1.1,
+    "LSTM_HIDDEN_SIZE": 128,
+    "LSTM_LR": 0.005,
+    "LSTM_EPOCHS": 100,
+    "LSTM_WEIGHT_DECAY": 0.001,
+    "LSTM_DROPOUT": 0.3,
+    "LSTM_TEMP_SCALE": 1.2,
+    "TRANS_D_MODEL": 64,
+    "TRANS_NHEAD": 4,
+    "TRANS_LR": 0.001,
+    "TRANS_EPOCHS": 80,
+    "TRANS_TEMP_SCALE": 1.2,
+    "DRIFT_DAMPENING": 0.9,
+    "N_GEN_PATHS": 1000,
+    "SYNTHETIC_SAMPLES": 10000
+}

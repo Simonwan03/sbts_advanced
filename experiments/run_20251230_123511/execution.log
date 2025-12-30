@@ -1,0 +1,33 @@
+2025-12-30 12:35:11,835 - INFO - Initialized run directory: experiments/run_20251230_123511
+2025-12-30 12:35:11,835 - INFO - ==========================================
+2025-12-30 12:35:11,835 - INFO -    SBTS Benchmark: Comparison Report      
+2025-12-30 12:35:11,835 - INFO - ==========================================
+
+2025-12-30 12:35:11,835 - INFO - Hyperparameters saved to experiments/run_20251230_123511/hyperparameters.json
+2025-12-30 12:35:11,836 - INFO - [Data] Mode: Real Data (5 Assets)
+2025-12-30 12:35:12,253 - INFO - 
+[Jumps] Detecting jumps (Global)...
+2025-12-30 12:35:13,136 - INFO -    [Vis] Jump visualization saved.
+2025-12-30 12:35:13,136 - INFO - 
+[Calibration] Fitting Volatility...
+2025-12-30 12:35:38,315 - INFO - 
+>>> Pipeline: Kernel
+2025-12-30 12:35:38,317 - INFO -    [Opt] Bandwidth BayesOpt...
+2025-12-30 12:35:38,318 - INFO -    [BayesOpt] Base h=0.0013. Search Space: [0.00013, 0.01267]
+2025-12-30 12:35:38,319 - INFO -    [BayesOpt] Starting optimization with 15 trials...
+2025-12-30 12:39:38,989 - INFO -    [BayesOpt] Best Bandwidth Found: 0.00624 (MSE: 0.000194)
+2025-12-30 12:39:39,130 - INFO -    [Gen] Simulating 500 paths...
+2025-12-30 12:40:19,642 - INFO - 
+>>> Pipeline: SBTS-LSTM
+2025-12-30 12:40:52,162 - INFO -    [Gen] Simulating 500 paths...
+2025-12-30 12:40:55,919 - INFO - 
+>>> Pipeline: LightSB
+2025-12-30 12:40:55,924 - INFO -    [LightSB] Training GMM...
+2025-12-30 12:40:59,674 - INFO -    [Gen] Simulating 500 paths...
+2025-12-30 12:41:03,399 - INFO - 
+[Visualization] Generating Reports...
+2025-12-30 12:41:04,927 - INFO - 
+[Done] Results saved in: experiments/run_20251230_123511
+2025-12-30 12:41:05,075 - INFO -    [Vis] Plotting Volatility Surface...
+2025-12-30 12:41:05,617 - INFO - 
+[Done] Full Benchmark Complete. Results in: experiments/run_20251230_123511

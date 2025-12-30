@@ -1,0 +1,17 @@
+2025-12-30 12:45:51,727 - INFO - Initialized run directory: experiments/run_20251230_124551
+2025-12-30 12:45:51,727 - INFO - ==========================================
+2025-12-30 12:45:51,727 - INFO -    SBTS Benchmark: Comparison Report      
+2025-12-30 12:45:51,727 - INFO - ==========================================
+
+2025-12-30 12:45:51,727 - INFO - Hyperparameters saved to experiments/run_20251230_124551/hyperparameters.json
+2025-12-30 12:45:51,728 - INFO - [Data] Mode: Real Data (5 Assets)
+2025-12-30 12:45:52,078 - INFO - 
+[Jumps] Detecting jumps (Global)...
+2025-12-30 12:45:52,086 - INFO -    [Vis] Plotting continuous jump timeline...
+2025-12-30 12:45:52,961 - INFO - 
+[Calibration] Fitting Volatility...
+2025-12-30 12:46:16,472 - INFO - 
+>>> Pipeline: Kernel
+2025-12-30 12:46:16,473 - INFO -    [Opt] Bandwidth BayesOpt...
+2025-12-30 12:46:16,474 - INFO -    [BayesOpt] Base h=0.0013. Search Space: [0.00013, 0.01267]
+2025-12-30 12:46:16,474 - INFO -    [BayesOpt] Starting optimization with 15 trials...

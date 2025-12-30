@@ -1,0 +1,27 @@
+{
+    "USE_REAL_DATA": true,
+    "FETCH_SP500": true,
+    "SP500_LIMIT": 100,
+    "START_DATE": "2020-01-01",
+    "END_DATE": "2023-12-31",
+    "SEQ_LEN": 60,
+    "MODELS_TO_RUN": [
+        "KERNEL",
+        "LSTM",
+        "TRANSFORMER"
+    ],
+    "USE_JUMPS": true,
+    "JUMP_THRESHOLD_STD": 4.0,
+    "VOL_BANDWIDTH": 0.5,
+    "USE_CV_FOR_KERNEL": true,
+    "BO_N_TRIALS": 15,
+    "KERNEL_TEMP_SCALE": 1.1,
+    "DL_EPOCHS": 60,
+    "LSTM_HIDDEN": 128,
+    "TRANS_D_MODEL": 64,
+    "TRANS_NHEAD": 4,
+    "DL_TEMP_SCALE": 1.1,
+    "DRIFT_DAMPENING": 0.9,
+    "N_GEN_PATHS": 500,
+    "SYNTHETIC_SAMPLES": 10000
+}

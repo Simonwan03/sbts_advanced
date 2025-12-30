@@ -1,0 +1,28 @@
+2025-12-29 20:04:04,717 - INFO - Initialized run directory: experiments/run_20251229_200404
+2025-12-29 20:04:04,717 - INFO - ==========================================
+2025-12-29 20:04:04,717 - INFO -    SBTS Advanced: Multi-Asset Pipeline    
+2025-12-29 20:04:04,718 - INFO -    (Transformer + Turing Test Metrics)    
+2025-12-29 20:04:04,718 - INFO - ==========================================
+
+2025-12-29 20:04:04,718 - INFO - Hyperparameters saved to experiments/run_20251229_200404/hyperparameters.json
+2025-12-29 20:04:04,718 - INFO - [Data] Mode: Real Data (['SPY', 'QQQ'])
+2025-12-29 20:04:05,264 - INFO - [Stats] Assets: 2, Samples: 946
+2025-12-29 20:04:05,264 - INFO - 
+[Jumps] Detecting jumps...
+2025-12-29 20:04:05,266 - INFO -    [Purification] Clipping data for volatility calibration...
+2025-12-29 20:04:05,267 - INFO - 
+[Calibration] Fitting Local Volatility Surface...
+2025-12-29 20:04:28,727 - INFO - 
+[Estimator] Training TRANSFORMER Drift Estimator...
+2025-12-29 20:05:36,410 - INFO - 
+[Generation] Simulating 1000 paths...
+2025-12-29 20:05:43,434 - INFO - 
+[Evaluation] Calculating Metrics...
+2025-12-29 20:05:43,434 - INFO -    [Metric] Avg Wasserstein Dist: 0.0034
+2025-12-29 20:05:43,436 - INFO -    [Metric] Cross-Corr Diff (Frobenius): 0.0794
+2025-12-29 20:05:43,436 - INFO -    [Metric] Running Discriminative Score (Turing Test)...
+2025-12-29 20:05:45,316 - INFO -    [Metric] Discriminative Score: 0.5018 (Target: 0.5)
+2025-12-29 20:05:45,316 - INFO - 
+[Visualization] Saving Plots...
+2025-12-29 20:05:46,537 - INFO - 
+[Done] All results saved in: experiments/run_20251229_200404

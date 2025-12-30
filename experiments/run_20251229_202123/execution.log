@@ -1,0 +1,34 @@
+2025-12-29 20:21:23,536 - INFO - Initialized run directory: experiments/run_20251229_202123
+2025-12-29 20:21:23,536 - INFO - ==========================================
+2025-12-29 20:21:23,536 - INFO -    SBTS Advanced: Large Scale Benchmark   
+2025-12-29 20:21:23,536 - INFO -    (Kernel vs LSTM vs Transformer)        
+2025-12-29 20:21:23,536 - INFO - ==========================================
+
+2025-12-29 20:21:23,536 - INFO - Hyperparameters saved to experiments/run_20251229_202123/hyperparameters.json
+2025-12-29 20:21:23,537 - INFO - [Data] Mode: Real Data (5 Assets)
+2025-12-29 20:21:23,934 - INFO - [Stats] Assets: 5, Samples: 946
+2025-12-29 20:21:23,935 - INFO - 
+[Jumps] Detecting jumps (Global)...
+2025-12-29 20:21:23,943 - INFO - 
+[Calibration] Fitting Local Volatility Surface...
+2025-12-29 20:21:49,045 - INFO - 
+>>> Running Pipeline for: KERNEL
+2025-12-29 20:21:49,047 - INFO -    [Opt] Running Bayesian Optimization for Bandwidth...
+2025-12-29 20:21:49,048 - INFO -    [BayesOpt] Base h=0.0013. Search Space: [0.00013, 0.01267]
+2025-12-29 20:21:49,049 - INFO -    [BayesOpt] Starting optimization with 15 trials...
+2025-12-29 20:25:31,334 - INFO -    [BayesOpt] Best Bandwidth Found: 0.00598 (MSE: 0.000171)
+2025-12-29 20:25:31,628 - INFO -    [Opt] Saved bandwidth_bayes_opt.png. Best h=0.00598
+2025-12-29 20:25:31,628 - INFO -    [Gen] Simulating 500 paths...
+2025-12-29 20:26:10,576 - INFO -    [Eval] Wasserstein (Avg Top 5): 0.0040
+2025-12-29 20:26:10,576 - INFO - 
+>>> Running Pipeline for: LSTM
+2025-12-29 20:26:31,834 - INFO -    [Gen] Simulating 500 paths...
+2025-12-29 20:26:35,404 - INFO -    [Eval] Wasserstein (Avg Top 5): 0.0035
+2025-12-29 20:26:35,404 - INFO - 
+>>> Running Pipeline for: TRANSFORMER
+2025-12-29 20:41:01,292 - INFO -    [Gen] Simulating 500 paths...
+2025-12-29 20:41:04,947 - INFO -    [Eval] Wasserstein (Avg Top 5): 0.0044
+2025-12-29 20:41:04,948 - INFO - 
+[Visualization] Generating Comparative Report...
+2025-12-29 20:41:05,788 - INFO - 
+[Done] Full Benchmark Complete. Results in: experiments/run_20251229_202123

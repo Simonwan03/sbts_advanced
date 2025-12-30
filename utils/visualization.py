@@ -1,7 +1,9 @@
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import seaborn as sns
 import numpy as np
 import os
+import pandas as pd
 
 # --- Nature-Style Configuration ---
 def set_style():
@@ -10,9 +12,15 @@ def set_style():
     sns.set_context("paper", font_scale=1.4)
     sns.set_style("ticks")
     
-    # Nature Colors: Blue, Red, Green, Purple
-    nature_colors = ['#4DBBD5', '#E64B35', '#00A087', '#3C5488']
-    sns.set_palette(nature_colors)
+    global STYLE_MAP
+    STYLE_MAP = {
+        'Real':    {'color': 'black',   'ls': '--', 'marker': 'o', 'label': 'Real'},
+        'Kernel':  {'color': '#4DBBD5', 'ls': '-',  'marker': 's', 'label': 'Kernel'}, 
+        'SBTS-LSTM': {'color': '#E64B35', 'ls': '--', 'marker': '^', 'label': 'LSTM'},   
+        'LSTM':      {'color': '#E64B35', 'ls': '--', 'marker': '^', 'label': 'LSTM'},   
+        'LIGHTSB': {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'}, 
+        'LightSB': {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'}, 
+    }
     
     plt.rcParams.update({
         'font.family': 'sans-serif',
@@ -23,11 +31,6 @@ def set_style():
         'ytick.direction': 'out',
         'figure.dpi': 300,
         'legend.frameon': False,
-        'figure.facecolor': 'white',
-        'axes.facecolor': 'white',
-        'grid.color': '#F0F0F0',
-        'grid.linestyle': '-',
-        'grid.linewidth': 0.8,
     })
 
 def _ensure_dir(path):
@@ -36,202 +39,468 @@ def _ensure_dir(path):
         os.makedirs(dirname, exist_ok=True)
 
 def _calc_autocorr(paths, max_lag=20):
-    """Helper: Calculate auto-correlation with NaN handling."""
     if paths.ndim == 3:
-        series = paths[:, :, 0]
+        series = paths[:, :, 0] 
     else:
         series = paths
         
     acfs = []
     for i in range(max_lag):
-        if i >= series.shape[1] - 1:
-            acfs.append(0)
-            continue
-        
+        if i >= series.shape[1] - 1: acfs.append(0); continue
         val_t = series[:, :-i-1].flatten()
-        val_t_plus_k = series[:, i+1:].flatten()
-        
-        # Remove NaNs
-        mask = ~np.isnan(val_t) & ~np.isnan(val_t_plus_k)
-        clean_t = val_t[mask]
-        clean_t_k = val_t_plus_k[mask]
-        
-        if len(clean_t) < 2:
-            acfs.append(0)
+        val_tk = series[:, i+1:].flatten()
+        mask = ~np.isnan(val_t) & ~np.isnan(val_tk)
+        if np.sum(mask) > 10:
+            acfs.append(np.corrcoef(val_t[mask], val_tk[mask])[0, 1])
         else:
-            acfs.append(np.corrcoef(clean_t, clean_t_k)[0, 1])
+            acfs.append(0)
     return np.array(acfs)
 
-# --- Plotting Functions ---
-
-def plot_bandwidth_optimization(mse_history, selected_h, save_path="outputs/bandwidth_tuning.png"):
-    """Visualizes Cross-Validation MSE vs Bandwidth."""
+# --- Performance Metrics Bar Chart ---
+def plot_performance_metrics(df_metrics, save_path="outputs/performance_metrics.png"):
+    """
+    Plots 1x4 bar charts for Training Time, Inference Time, WD, and ACF Error.
+    """
     set_style()
     _ensure_dir(save_path)
     
+    metrics = ['train_time', 'gen_time', 'WD', 'ACF_MSE']
+    titles = ['Training Time (s)', 'Generation Time (s)', 'Wasserstein Dist (Lower Better)', 'ACF MSE (Lower Better)']
+    
+    fig, axes = plt.subplots(1, 4, figsize=(24, 5))
+    
+    palette = [STYLE_MAP.get(idx, {'color': 'gray'})['color'] for idx in df_metrics.index]
+    
+    for i, metric in enumerate(metrics):
+        if metric in df_metrics.columns:
+            # --- FIX: Added hue and legend=False to silence warning ---
+            sns.barplot(
+                x=df_metrics.index, 
+                y=df_metrics[metric], 
+                hue=df_metrics.index, # Assign x to hue
+                ax=axes[i], 
+                palette=palette, 
+                legend=False          # Disable legend to mimic old behavior
+            )
+            axes[i].set_title(titles[i], fontweight='bold')
+            axes[i].set_ylabel('')
+            axes[i].set_xlabel('')
+            
+            for p in axes[i].patches:
+                axes[i].annotate(f'{p.get_height():.4f}', 
+                                (p.get_x() + p.get_width() / 2., p.get_height()), 
+                                ha = 'center', va = 'center', 
+                                xytext = (0, 9), textcoords = 'offset points')
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+# --- Comprehensive Comparison ---
+def plot_comprehensive_comparison(time_grid, real_returns, results_store, real_prices=None, gen_prices_dict=None, save_path="outputs/full_comparison.png"):
+    set_style()
+    _ensure_dir(save_path)
+    
+    fig, axes = plt.subplots(2, 3, figsize=(24, 12))
+    
+    methods = list(results_store.keys())
+    plot_methods = methods[:3] 
+    
+    if real_prices is not None and gen_prices_dict is not None:
+        for i, method in enumerate(plot_methods):
+            ax = axes[0, i]
+            style = STYLE_MAP.get(method, {'color':'blue'})
+            gen_data = gen_prices_dict.get(method)
+            
+            ax.plot(real_prices[:50, :, 0].T, color='gray', alpha=0.1, linewidth=0.8)
+            if gen_data is not None and not np.isnan(gen_data).any():
+                ax.plot(gen_data[:15, :, 0].T, color=style['color'], alpha=0.6, linewidth=1.0)
+                ax.plot(np.mean(gen_data, axis=0)[:,0], color=style['color'], linewidth=2.5, label=f'{method} Mean')
+            
+            ax.plot(np.mean(real_prices, axis=0)[:,0], 'k--', linewidth=2.5, label='Real Mean')
+            ax.set_title(f"Price Reconstruction: Real vs {method}", fontweight='bold')
+            ax.legend(loc='upper left')
+            
+            y_min, y_max = np.min(real_prices), np.max(real_prices)
+            margin = (y_max - y_min) * 0.5
+            ax.set_ylim(y_min - margin, y_max + margin)
+
+    ax_dens = axes[1, 0]
+    sns.kdeplot(real_returns[:, -1, 0], ax=ax_dens, color='gray', fill=True, alpha=0.3, label='Real')
+    
+    for method in methods:
+        paths = results_store[method]
+        if np.isnan(paths).any(): continue
+        style = STYLE_MAP.get(method, {'color':'blue', 'ls':'-'})
+        sns.kdeplot(paths[:, -1, 0], ax=ax_dens, color=style['color'], linestyle=style['ls'], linewidth=2, label=method)
+    
+    ax_dens.set_title("Log-Returns Density (Fat Tails Check)", fontweight='bold')
+    ax_dens.legend()
+
+    ax_acf = axes[1, 1]
+    lag = np.arange(15)
+    real_acf = _calc_autocorr(real_returns, 15)
+    ax_acf.plot(lag, real_acf, color='black', marker='o', linestyle='-', label='Real')
+    
+    for method in methods:
+        paths = results_store[method]
+        if np.isnan(paths).any(): continue
+        style = STYLE_MAP.get(method, {'color':'blue', 'marker':'x', 'ls':'--'})
+        gen_acf = _calc_autocorr(paths, 15)
+        ax_acf.plot(lag, gen_acf, color=style['color'], marker=style['marker'], linestyle=style['ls'], label=method)
+        
+    ax_acf.set_title("Temporal Dynamics (ACF)", fontweight='bold')
+    ax_acf.legend()
+
+    ax_vol = axes[1, 2]
+    real_abs_acf = _calc_autocorr(np.abs(real_returns), 15)
+    ax_vol.plot(lag, real_abs_acf, color='black', marker='o', linestyle='-', label='Real |r|')
+    
+    method = 'SBTS-LSTM'
+    if method in results_store:
+        paths = results_store[method]
+        style = STYLE_MAP.get(method, {'color':'red'})
+        gen_abs_acf = _calc_autocorr(np.abs(paths), 15)
+        ax_vol.plot(lag, gen_abs_acf, color=style['color'], marker='^', linestyle='--', label=f'{method} |r|')
+        
+    ax_vol.set_title("Volatility Clustering (Stylized Fact)", fontweight='bold')
+    ax_vol.legend()
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+def plot_bandwidth_optimization(mse_history, selected_h, save_path="outputs/bandwidth_tuning.png"):
+    set_style()
+    _ensure_dir(save_path)
     fig, ax = plt.subplots(figsize=(6, 5))
     hs = sorted(list(mse_history.keys()))
     mses = [mse_history[h] for h in hs]
-    
-    ax.plot(hs, mses, marker='o', markersize=5, color='#3C5488', linewidth=1.5, label='CV MSE')
-    ax.axvline(x=selected_h, color='#E64B35', linestyle='--', linewidth=2, label=f'Optimal h={selected_h:.3f}')
-    
+    ax.plot(hs, mses, marker='o', markersize=5, color='#3C5488', label='CV MSE')
+    ax.axvline(x=selected_h, color='#E64B35', linestyle='--', label=f'Optimal h={selected_h:.4f}')
     ax.set_xscale('log')
     ax.set_xlabel("Bandwidth (h)")
-    ax.set_ylabel("CV MSE (Terminal)")
-    ax.set_title("Adaptive Bandwidth Selection (Bayes Opt)", fontweight='bold', pad=15)
+    ax.set_ylabel("MSE")
+    ax.set_title("Bandwidth Optimization")
     ax.legend()
-    ax.grid(True, which="both", alpha=0.3)
-    sns.despine()
-    
     plt.tight_layout()
     plt.savefig(save_path)
-    print(f"[Plot Saved] {save_path}")
     plt.close()
 
-def plot_jump_detection(time_grid, path, jump_indices, save_path="outputs/jump_detection.png"):
-    """Highlights detected jumps on a trajectory."""
+def plot_correlation_distribution(real_data, gen_dict, save_path="outputs/corr_dist.png"):
     set_style()
     _ensure_dir(save_path)
+    N, T, D = real_data.shape
+    if D < 2: return
+
+    real_flat = real_data.reshape(-1, D)
+    real_corr = np.corrcoef(real_flat, rowvar=False)
+    real_vals = real_corr[np.triu_indices_from(real_corr, k=1)]
     
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(time_grid, path, color='#333333', linewidth=1.0, label='Trajectory')
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.kdeplot(real_vals, color='gray', fill=True, alpha=0.3, label='Real')
     
-    jump_times = time_grid[1:][jump_indices]
-    jump_values = path[1:][jump_indices]
-    
-    if len(jump_times) > 0:
-        ax.scatter(jump_times, jump_values, color='#E64B35', s=40, zorder=5, label='Detected Jumps')
-    
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Value")
-    ax.set_title("Regime Shift / Jump Detection", fontweight='bold', pad=15)
+    for name, paths in gen_dict.items():
+        if np.isnan(paths).any(): continue
+        flat = paths.reshape(-1, D)
+        corr = np.corrcoef(flat, rowvar=False)
+        vals = corr[np.triu_indices_from(corr, k=1)]
+        style = STYLE_MAP.get(name, {'color':'blue'})
+        sns.kdeplot(vals, color=style['color'], label=name)
+        
+    ax.set_title(f"Pairwise Correlation Distribution ({D} Assets)")
+    ax.set_xlabel("Correlation Coefficient")
+    ax.set_xlim(-1, 1)
     ax.legend()
-    sns.despine()
-    
     plt.tight_layout()
     plt.savefig(save_path)
-    print(f"[Plot Saved] {save_path}")
     plt.close()
 
-def plot_method_comparison(time_grid, real_data, kernel_paths, lstm_paths, save_path="outputs/comparison.png"):
-    """
-    Comparison Plot: Real vs Kernel vs LSTM (Returns/State Space).
-    Includes NaN safety checks.
-    """
+def plot_price_index_comparison(real_prices, gen_prices_dict, save_path="outputs/price_index.png"):
     set_style()
     _ensure_dir(save_path)
-    
-    # --- SAFETY: Filter NaNs ---
-    def clean_paths(paths):
-        if np.isnan(paths).any():
-            # Keep only paths that have NO NaNs across all time steps
-            mask = ~np.isnan(paths).any(axis=(1, 2))
-            cleaned = paths[mask]
-            return cleaned
-        return paths
-
-    kernel_paths = clean_paths(kernel_paths)
-    lstm_paths = clean_paths(lstm_paths)
-    
-    if len(kernel_paths) == 0 or len(lstm_paths) == 0:
-        return
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    
-    # --- 1. Trajectory Mean ---
-    real_mean = np.nanmean(real_data[:,:,0], axis=0)
-    kernel_mean = np.nanmean(kernel_paths[:,:,0], axis=0)
-    lstm_mean = np.nanmean(lstm_paths[:,:,0], axis=0)
-    
-    # Plot faint paths
-    axes[0].plot(time_grid, kernel_paths[0:15,:,0].T, color='#4DBBD5', alpha=0.15)
-    
-    axes[0].plot(time_grid, real_mean, 'k--', linewidth=2.5, label='Real')
-    axes[0].plot(time_grid, kernel_mean, color='#4DBBD5', linewidth=2.5, label='Kernel')
-    axes[0].plot(time_grid, lstm_mean, color='#E64B35', linewidth=2.5, linestyle='-.', label='LSTM')
-    
-    axes[0].set_title("Trajectory Reconstruction", fontweight='bold')
-    axes[0].set_xlabel("Time")
-    axes[0].set_ylabel("State X_t")
-    axes[0].legend(loc='upper left')
-    axes[0].grid(True, alpha=0.2)
-
-    # --- 2. Terminal Distribution ---
-    real_term = real_data[:, -1, 0]
-    kernel_term = kernel_paths[:, -1, 0]
-    lstm_term = lstm_paths[:, -1, 0]
-    
-    # Filter NaNs for KDE
-    sns.kdeplot(real_term[~np.isnan(real_term)], ax=axes[1], color='gray', fill=True, alpha=0.3, label='Real')
-    sns.kdeplot(kernel_term[~np.isnan(kernel_term)], ax=axes[1], color='#4DBBD5', linewidth=2.5, label='Kernel')
-    sns.kdeplot(lstm_term[~np.isnan(lstm_term)], ax=axes[1], color='#E64B35', linewidth=2.5, linestyle='--', label='LSTM')
-    
-    axes[1].set_title("Terminal Distribution", fontweight='bold')
-    axes[1].set_xlabel("Value")
-    axes[1].set_ylabel("Density")
-    axes[1].legend()
-    axes[1].grid(False)
-
-    # --- 3. Auto-correlation ---
-    max_lag = 15
-    lag_grid = np.arange(max_lag)
-    
-    acf_real = _calc_autocorr(real_data, max_lag)
-    acf_kernel = _calc_autocorr(kernel_paths, max_lag)
-    acf_lstm = _calc_autocorr(lstm_paths, max_lag)
-    
-    axes[2].plot(lag_grid, acf_real, 'ko-', linewidth=1.5, markersize=6, label='Real')
-    axes[2].plot(lag_grid, acf_kernel, 's-', color='#4DBBD5', linewidth=1.5, markersize=6, label='Kernel')
-    axes[2].plot(lag_grid, acf_lstm, '^--', color='#E64B35', linewidth=1.5, markersize=6, label='LSTM')
-    
-    axes[2].set_title("Temporal Dynamics (ACF)", fontweight='bold')
-    axes[2].set_xlabel("Lag (steps)")
-    axes[2].set_ylabel("Correlation")
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.2)
-
-    sns.despine()
-    plt.tight_layout()
-    plt.savefig(save_path)
-    print(f"[Plot Saved] {save_path}")
-    plt.close()
-
-def plot_price_reconstruction(real_prices, gen_prices, method_name, ticker, save_path="outputs/prices.png"):
-    """
-    Plots reconstructed asset prices (Real vs Generated).
-    Used for converting Log Returns back to Price paths.
-    """
-    set_style()
-    _ensure_dir(save_path)
-    
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Number of paths to visualize
-    n_total = real_prices.shape[0]
-    n_plot = min(50, n_total)
+    real_index = np.mean(real_prices, axis=2) 
+    ax.plot(real_index[:50].T, color='gray', alpha=0.1)
+    ax.plot(np.mean(real_index, axis=0), color='black', linestyle='--', linewidth=2.5, label='Real Index Mean')
     
-    # 1. Plot subset of Real Prices (Gray background)
-    ax.plot(real_prices[:n_plot, :, 0].T, color='gray', alpha=0.1, linewidth=0.8)
-    
-    # 2. Plot subset of Generated Prices (Colored)
-    # Use Red (#E64B35) for LSTM/Gen usually
-    ax.plot(gen_prices[:min(10, n_total), :, 0].T, color='#E64B35', alpha=0.6, linewidth=1.0)
-    
-    # 3. Plot Means
-    real_mean = np.mean(real_prices, axis=0).flatten()
-    gen_mean = np.mean(gen_prices, axis=0).flatten()
-    
-    ax.plot(real_mean, 'k--', linewidth=2.0, label='Real Mean Price')
-    ax.plot(gen_mean, color='#E64B35', linewidth=2.0, label=f'{method_name} Mean Price')
-    
-    ax.set_title(f"Reconstructed Price Paths ({ticker})", fontweight='bold')
-    ax.set_xlabel("Time Steps (Days)")
+    for name, paths in gen_prices_dict.items():
+        if np.isnan(paths).any(): continue
+        gen_index = np.mean(paths, axis=2)
+        style = STYLE_MAP.get(name, {'color':'blue'})
+        ax.plot(np.mean(gen_index, axis=0), color=style['color'], linewidth=2.5, label=name)
+        
+    ax.set_title("Market Index Reconstruction (Equal Weighted)", fontweight='bold')
     ax.set_ylabel("Price (Normalized)")
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.2)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+# --- Volatility Surface Visualization ---
+def plot_volatility_surface(vol_model, data_range, T=1.0, save_path="outputs/vol_surface.png"):
+    """
+    Plots the calibrated Local Volatility Surface sigma(t, x).
+    Handles multi-asset models by setting non-target assets to mean (0).
+    """
+    set_style()
+    _ensure_dir(save_path)
     
-    sns.despine()
+    # 1. Create Grid
+    t_grid = np.linspace(0, T, 50)
+    x_min, x_max = np.min(data_range), np.max(data_range)
+    x_grid = np.linspace(x_min, x_max, 50)
+    
+    T_mesh, X_mesh = np.meshgrid(t_grid, x_grid)
+    
+    t_flat = T_mesh.ravel()
+    x_flat = X_mesh.ravel() # shape (N_grid,)
+    
+    try:
+        # Check expected input dimension from the scaler
+        # n_features_in_ = 1 (time) + D (assets)
+        expected_dim = vol_model.scaler_X.n_features_in_
+        n_assets = expected_dim - 1
+        
+        # Prepare x input: (N_grid, n_assets)
+        # We vary the first asset (or all assuming homogeneity) and set others to 0 (mean return)
+        x_input = np.zeros((len(x_flat), n_assets))
+        
+        # Set the first dimension to our grid values
+        # This visualizes the volatility slice w.r.t the first asset's movement
+        x_input[:, 0] = x_flat
+        
+        # Predict
+        # predict handles t as vector (N_grid,) and x as (N_grid, n_assets)
+        # It returns (N_grid, n_assets) volatility vector
+        vol_pred = vol_model.predict(t_flat, x_input)
+        
+        # Take the volatility of the first asset
+        vol_flat = vol_pred[:, 0]
+        
+        Vol_mesh = vol_flat.reshape(T_mesh.shape)
+        
+    except Exception as e:
+        print(f"[Warning] Could not plot vol surface: {e}")
+        return
+
+    # 3. Plot Heatmap
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cp = ax.contourf(T_mesh, X_mesh, Vol_mesh, 20, cmap='magma')
+    cbar = fig.colorbar(cp)
+    cbar.set_label("Local Volatility $\sigma(t, x)$")
+    
+    ax.set_title("Calibrated Local Volatility Surface (Asset 1 Slice)", fontweight='bold')
+    ax.set_xlabel("Time (t)")
+    ax.set_ylabel("Log Return State (x)")
+    
+    ax.axvline(T/2, color='white', linestyle='--', alpha=0.3)
+    ax.text(T/2, x_min, " T/2 Slice", color='white', fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+def plot_multi_asset_jumps(dates, continuous_returns, tickers, threshold_std=4.0, save_path="outputs/jump_visualization.png"):
+    """
+    Visualizes continuous log-returns and highlights detected jumps with REAL DATES.
+    """
+    set_style()
+    _ensure_dir(save_path)
+    
+    n_assets = continuous_returns.shape[1]
+    n_plot = min(n_assets, 5) # Plot max 5 assets
+    
+    fig, axes = plt.subplots(n_plot, 1, figsize=(12, 3 * n_plot), sharex=True)
+    if n_plot == 1: axes = [axes]
+    
+    # Calculate thresholds based on the full continuous series
+    flat_data = continuous_returns.flatten()
+    sigma_robust = np.median(np.abs(flat_data)) / 0.6745
+    # Assuming daily data approx
+    dt = 1.0/252.0
+    threshold_val = threshold_std * sigma_robust * np.sqrt(dt)
+    
+    for i in range(n_plot):
+        ax = axes[i]
+        ticker = tickers[i]
+        
+        # Data for this asset
+        series = continuous_returns[:, i]
+        
+        # Identify Jumps
+        is_jump = np.abs(series) > threshold_val
+        
+        # Plot Returns
+        ax.plot(dates, series, color='#333333', linewidth=0.8, label=f'{ticker} Returns')
+        
+        # Plot Threshold Bounds
+        ax.axhline(threshold_val, color='orange', linestyle='--', alpha=0.5, linewidth=1, label='Threshold')
+        ax.axhline(-threshold_val, color='orange', linestyle='--', alpha=0.5, linewidth=1)
+        
+        # Highlight Jumps
+        if np.any(is_jump):
+            ax.scatter(dates[is_jump], series[is_jump], 
+                       color='#E64B35', s=20, zorder=5, label='Detected Jump')
+            
+        ax.set_title(f"{ticker} Jump Detection (Threshold = {threshold_std}$\sigma$)", fontweight='bold')
+        ax.set_ylabel("Log Return")
+        
+        # Format X-Axis as Years
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.set_major_locator(mdates.YearLocator())
+        
+        if i == 0:
+            ax.legend(loc='upper right', frameon=True)
+        ax.grid(True, alpha=0.2)
+        
+    plt.xlabel("Time (Year)")
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+def plot_zoomed_crisis(dates, returns, tickers, threshold_std=4.0, save_path="outputs/jump_crisis_zoom.png"):
+    """
+    Zooms in on the 2020 COVID-19 period to show jumps clearly.
+    """
+    set_style()
+    _ensure_dir(save_path)
+    
+    # Filter Data for 2020
+    # Assuming dates is a pandas Index or array of datetimes
+    if isinstance(dates, pd.DatetimeIndex) or isinstance(dates, np.ndarray):
+        df_dates = pd.to_datetime(dates)
+        mask = (df_dates >= "2020-01-01") & (df_dates <= "2020-06-30")
+        
+        if np.sum(mask) == 0:
+            print("[Warning] No data found in 2020 for zoom plot.")
+            return
+            
+        dates_zoom = dates[mask]
+        returns_zoom = returns[mask]
+    else:
+        return
+
+    n_assets = returns.shape[1]
+    n_plot = min(n_assets, 3) # Only plot top 3 assets to save space
+    
+    fig, axes = plt.subplots(n_plot, 1, figsize=(12, 3 * n_plot), sharex=True)
+    if n_plot == 1: axes = [axes]
+    
+    # Recalculate threshold
+    flat_data = returns.flatten()
+    sigma_robust = np.median(np.abs(flat_data)) / 0.6745
+    threshold_val = threshold_std * sigma_robust * np.sqrt(1.0/252.0)
+    
+    for i in range(n_plot):
+        ax = axes[i]
+        ticker = tickers[i]
+        series = returns_zoom[:, i]
+        
+        # Plot Bar chart for returns (better for daily view)
+        # Colors: Red for negative, Green for positive
+        colors = np.where(series >= 0, '#00A087', '#E64B35')
+        ax.bar(dates_zoom, series, color=colors, alpha=0.6, width=1.0)
+        
+        # Plot Threshold lines
+        ax.axhline(threshold_val, color='orange', linestyle='--', linewidth=1)
+        ax.axhline(-threshold_val, color='orange', linestyle='--', linewidth=1)
+        
+        # Highlight Jumps
+        is_jump = np.abs(series) > threshold_val
+        if np.any(is_jump):
+            ax.scatter(dates_zoom[is_jump], series[is_jump], 
+                       color='black', s=20, marker='x', label='Jump Event', zorder=10)
+
+        ax.set_title(f"{ticker} COVID-19 Crisis View (2020 H1)", fontweight='bold')
+        ax.set_ylabel("Daily Log Return")
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.2)
+        
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b-%d'))
+        
+    plt.xlabel("Date (2020)")
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+def plot_jumps_on_price(dates, returns, tickers, threshold_std=4.0, save_path="outputs/jump_on_price.png"):
+    """
+    Visualizes Price Paths and highlights where jumps occurred.
+    Much more intuitive than looking at raw returns.
+    """
+    set_style()
+    _ensure_dir(save_path)
+    
+    n_assets = returns.shape[1]
+    n_plot = min(n_assets, 5)
+    
+    fig, axes = plt.subplots(n_plot, 1, figsize=(12, 4 * n_plot), sharex=True)
+    if n_plot == 1: axes = [axes]
+    
+    # Global threshold calculation
+    flat_data = returns.flatten()
+    sigma_robust = np.median(np.abs(flat_data)) / 0.6745
+    # Daily vol approx
+    dt = 1.0/252.0
+    threshold_val = threshold_std * sigma_robust * np.sqrt(dt)
+    
+    for i in range(n_plot):
+        ax = axes[i]
+        ticker = tickers[i]
+        
+        # 1. Reconstruct Price (Normalized to 100)
+        r_series = returns[:, i]
+        price_series = 100 * np.exp(np.cumsum(r_series))
+        
+        # 2. Identify Jump Indices
+        is_jump = np.abs(r_series) > threshold_val
+        
+        # 3. Plot Price Line
+        ax.plot(dates, price_series, color='#333333', linewidth=1.5, label=f'{ticker} Price')
+        
+        # 4. Highlight Jump Days
+        # We plot dots ON the price line where jumps happened
+        if np.any(is_jump):
+            # Split into positive and negative jumps for color
+            pos_jumps = (r_series > threshold_val)
+            neg_jumps = (r_series < -threshold_val)
+            
+            if np.any(pos_jumps):
+                ax.scatter(dates[pos_jumps], price_series[pos_jumps], 
+                           color='#00A087', s=40, zorder=5, marker='^', label='Positive Jump')
+            if np.any(neg_jumps):
+                ax.scatter(dates[neg_jumps], price_series[neg_jumps], 
+                           color='#E64B35', s=40, zorder=5, marker='v', label='Negative Jump')
+
+        ax.set_title(f"{ticker} Price Evolution with Jumps (Threshold={threshold_std}$\sigma$)", fontweight='bold')
+        ax.set_ylabel("Price ($)")
+        
+        # Highlight 2020 Crisis Area
+        # Convert date strings to datetime if needed, or rely on matplotlib handling
+        # Assuming dates are datetime objects or recognizable
+        try:
+            crisis_start = pd.Timestamp("2020-02-20")
+            crisis_end = pd.Timestamp("2020-04-30")
+            ax.axvspan(crisis_start, crisis_end, color='red', alpha=0.1, label='COVID-19 Crash')
+        except:
+            pass # Skip shading if date format issues
+            
+        ax.legend(loc='upper left')
+        ax.grid(True, alpha=0.2)
+        
+        # Date Formatting
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+
+    plt.xlabel("Date")
     plt.tight_layout()
     plt.savefig(save_path)
     print(f"[Plot Saved] {save_path}")

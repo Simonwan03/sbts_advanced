@@ -1,18 +1,33 @@
 import numpy as np
 import os
+import torch
+import time
+import pandas as pd
 
-# Imports (Relative to root)
+# Core Modules
 from core.solver import euler_maruyama_generator
 from core.drift_estimators import KernelDriftEstimator, LSTMDriftEstimator
+from core.lightsb import LightSBTrainer 
 from core.reference import LocalVolatilityReference, JumpDiffusionReference
 from core.bandwidth import BandwidthSelector
 
 from models.calibration import VolatilityCalibrator
 from models.jumps import JumpDetector
 
-from utils.visualization import plot_method_comparison, plot_price_reconstruction, plot_bandwidth_optimization, set_style
+# Visualization
+from utils.visualization import (
+    plot_comprehensive_comparison, 
+    plot_performance_metrics, # NEW
+    plot_volatility_surface,
+    plot_bandwidth_optimization, 
+    plot_correlation_distribution,
+    plot_multi_asset_jumps,
+    set_style,
+    _calc_autocorr
+)
 from utils.data_loader import RealDataLoader, reconstruct_prices
 from utils.logger import Logger
+from utils.metrics import wasserstein_distance_1d
 
 def main():
     # =========================================================
@@ -20,42 +35,46 @@ def main():
     # =========================================================
     CONFIG = {
         "USE_REAL_DATA": True,
-        "TICKER": "SPY",
+        "FETCH_SP500": True,  
+        "SP500_LIMIT": 100,
         "START_DATE": "2020-01-01",
         "END_DATE": "2023-12-31",
         "SEQ_LEN": 60,
         
-        # Jump Detection & Calibration
-        "USE_JUMPS": True,          # Enable Phase 4
-        "JUMP_THRESHOLD_STD": 4.0,  # Threshold for jump detection (higher = fewer jumps)
+        # Models
+        "MODELS_TO_RUN": ["Kernel", "SBTS-LSTM", "LightSB"], 
         
-        # Volatility Calibration
-        "VOL_BANDWIDTH_REAL": 0.5,
-        "VOL_BANDWIDTH_SYNTH": 0.5,
+        # Physics
+        "USE_JUMPS": True,          
+        "JUMP_THRESHOLD_STD": 4.0,  
+        "VOL_BANDWIDTH": 0.5,
         
-        # Kernel Estimator (Bayesian Opt Config)
-        "USE_CV_FOR_KERNEL": True, 
-        "BO_N_TRIALS": 20,              
-        "KERNEL_BANDWIDTH_DEFAULT": 0.05,
+        # Hyperparams
+        "USE_CV_FOR_KERNEL": True,
+        "BO_N_TRIALS": 15, 
         "KERNEL_TEMP_SCALE": 1.1,
         
-        # LSTM Estimator
-        "LSTM_HIDDEN_SIZE": 128,        
+        "LSTM_HIDDEN": 128,
         "LSTM_LR": 0.005,
-        "LSTM_EPOCHS": 100,
+        "LSTM_EPOCHS": 80,
         "LSTM_WEIGHT_DECAY": 1e-3,
         "LSTM_DROPOUT": 0.3,
-        "LSTM_TEMP_SCALE": 1.1,         # Slightly increased to compensate for removed jumps in sigma
-        "LSTM_DRIFT_DAMPENING": 0.8,
+        "LSTM_TEMP_SCALE": 1.1,
+        "LSTM_DRIFT_DAMPENING": 0.9, 
         
-        "N_GEN_PATHS": 1000,
+        "LIGHTSB_COMPONENTS": 20,
+        "LIGHTSB_LR": 0.005,
+        "LIGHTSB_STEPS": 1000,
+        "LIGHTSB_MIN_COV": 0.01,
+        "LIGHTSB_TEMP_SCALE": 1.1,
+        
+        "N_GEN_PATHS": 500, 
         "SYNTHETIC_SAMPLES": 10000
     }
 
     logger = Logger(base_dir="experiments")
     logger.info("==========================================")
-    logger.info("   SBTS Advanced: Jump-Diffusion Pipeline ")
-    logger.info("   (With Volatility Purification)         ")
+    logger.info("   SBTS Benchmark: Comparison Report      ")
     logger.info("==========================================\n")
     logger.save_config(CONFIG)
     set_style()
@@ -64,174 +83,222 @@ def main():
     # 1. Data Loading
     # =========================================================
     if CONFIG["USE_REAL_DATA"]:
-        logger.info(f"[Data] Mode: Real Data ({CONFIG['TICKER']})")
-        loader = RealDataLoader(CONFIG["TICKER"], CONFIG["START_DATE"], CONFIG["END_DATE"])
+        if CONFIG["FETCH_SP500"]:
+            tickers = RealDataLoader.get_sp500_tickers(limit=CONFIG["SP500_LIMIT"])
+        else:
+            tickers = ["SPY", "QQQ", "IWM", "GLD"]
+        logger.info(f"[Data] Mode: Real Data ({len(tickers)} Assets)")
+        loader = RealDataLoader(tickers, CONFIG["START_DATE"], CONFIG["END_DATE"])
         loader.download()
         data, mu, sigma = loader.get_sliding_windows(CONFIG["SEQ_LEN"])
         dt = 1.0 / 252.0 
         steps = CONFIG["SEQ_LEN"]
         time_grid = np.linspace(0, steps * dt, steps)
-        logger.info(f"[Stats] Mean: {mu:.5f}, Vol: {sigma:.5f}")
+        n_assets = data.shape[-1]
     else:
-        logger.info("[Data] Mode: Synthetic OU Data")
-        T, N_samples = 1.0, CONFIG["SYNTHETIC_SAMPLES"]
-        steps = 50
-        time_grid = np.linspace(0, T, steps)
-        dt = T / (steps - 1)
-        data = np.zeros((N_samples, steps, 1))
-        for i in range(N_samples):
-            x = np.random.normal(0, 0.5)
-            for t_idx in range(1, steps):
-                dx = -2.0 * x * dt + 0.5 * np.sqrt(dt) * np.random.randn()
-                x += dx
-                data[i, t_idx, 0] = x
+        # Synthetic logic (simplified)
+        pass
 
     # =========================================================
-    # 2. Phase 4: Jump Detection & Data Purification
+    # 2. Calibration
     # =========================================================
     jump_detector = JumpDetector(dt=dt, threshold_multiplier=CONFIG["JUMP_THRESHOLD_STD"])
-    
-    # Create a clean dataset for volatility calibration
-    # Default is original data (if jumps are disabled)
-    data_for_vol_calibration = data.copy() 
+    data_for_vol = data.copy()
 
     if CONFIG["USE_JUMPS"]:
-        logger.info("\n[Jumps] Detecting jumps in training data...")
+        logger.info("\n[Jumps] Detecting jumps (Global)...")
         jump_detector.fit(data)
         
-        # --- CRITICAL: Purify Data ---
-        logger.info("   [Purification] Removing jumps from data for volatility calibration...")
-        
+        # Purification logic...
         flat_data = data.flatten()
-        # Robust sigma estimate
         sigma_robust = np.median(np.abs(flat_data)) / 0.6745
         threshold = CONFIG["JUMP_THRESHOLD_STD"] * sigma_robust * np.sqrt(dt)
+        data_for_vol = np.clip(data, -threshold, threshold)
         
-        # Clip data to threshold to remove extreme jumps
-        data_for_vol_calibration = np.clip(data, -threshold, threshold)
+        if CONFIG["USE_REAL_DATA"]:
+            logger.info("   [Vis] Plotting improved jump visualizations...")
+            
+            if loader.log_returns is not None:
+                cont_returns = loader.log_returns
+                # Ensure dates are proper datetime objects
+                cont_dates = pd.to_datetime(loader.raw_prices_df.index[1:])
+                
+                # 1. Price Path View (Global View)
+                from utils.visualization import plot_jumps_on_price
+                plot_jumps_on_price(
+                    cont_dates, 
+                    cont_returns, 
+                    tickers, 
+                    threshold_std=CONFIG["JUMP_THRESHOLD_STD"],
+                    save_path=logger.get_save_path("jumps_on_price.png")
+                )
+                
+                # 2. Zoomed View (2020 Crisis)
+                from utils.visualization import plot_zoomed_crisis
+                plot_zoomed_crisis(
+                    cont_dates,
+                    cont_returns,
+                    tickers,
+                    threshold_std=CONFIG["JUMP_THRESHOLD_STD"],
+                    save_path=logger.get_save_path("jumps_zoom_2020.png")
+                )
+        # ----------------------------
         
-        logger.info(f"   [Purification] Data clipped to range [{ -threshold:.4f}, {threshold:.4f}]")
     else:
         logger.info("\n[Jumps] Jump detection disabled.")
 
-    # =========================================================
-    # 3. Phase 3: Volatility Calibration (On Purified Data)
-    # =========================================================
-    logger.info("\n[Calibration] Fitting Local Volatility Surface...")
-    bw = CONFIG["VOL_BANDWIDTH_REAL"] if CONFIG["USE_REAL_DATA"] else CONFIG["VOL_BANDWIDTH_SYNTH"]
     
-    vol_calibrator = VolatilityCalibrator(dt=dt, method='kernel', bandwidth=bw)
-    # Fit on CLEAN data to avoid double counting variance
-    vol_calibrator.fit(data_for_vol_calibration) 
+    logger.info("\n[Calibration] Fitting Volatility...")
+    vol_calibrator = VolatilityCalibrator(dt=dt, method='kernel', bandwidth=CONFIG["VOL_BANDWIDTH"])
+    vol_calibrator.fit(data_for_vol)
     
-    # Reference for CV (use simple LV, no jumps for bandwidth tuning)
-    ref_for_cv = LocalVolatilityReference(vol_calibrator, volatility_multiplier=1.0)
-
     # =========================================================
-    # 4. Drift Estimation (Kernel & LSTM)
+    # 3. Model Loop (With Metrics Collection)
     # =========================================================
-    # Note: Drift estimators are trained on ORIGINAL data (with jumps)
-    # so they learn the correct mean-reversion force after a jump.
-    
-    logger.info("\n[Estimator 1] Kernel Drift Estimator")
-    best_h = CONFIG["KERNEL_BANDWIDTH_DEFAULT"]
-    
-    if CONFIG["USE_CV_FOR_KERNEL"]:
-        logger.info("   Running Bayesian Optimization for Bandwidth...")
-        
-        def cv_simulator(start_points, drift_fn):
-            return euler_maruyama_generator(
-                start_points, time_grid, drift_fn, ref_for_cv, n_paths=len(start_points)
-            )
-            
-        selector = BandwidthSelector(n_trials=CONFIG["BO_N_TRIALS"], n_splits=3)
-        best_h = selector.fit(
-            trajectories=data, 
-            drift_estimator_cls=KernelDriftEstimator, 
-            simulator_func=cv_simulator,
-            dt=dt
-        )
-        
-        plot_bandwidth_optimization(
-            selector.get_history(), best_h, 
-            save_path=logger.get_save_path("bandwidth_bayes_opt.png")
-        )
-        logger.info(f"   Optimization Plot saved.")
-    
-    kernel_est = KernelDriftEstimator(bandwidth=best_h) 
-    kernel_est.fit(data, dt)
-    
-    # --- B. LSTM ---
-    logger.info("\n[Estimator 2] Training LSTM Drift...")
-    lstm_est = LSTMDriftEstimator(
-        input_dim=1, 
-        hidden_size=CONFIG["LSTM_HIDDEN_SIZE"], 
-        lr=CONFIG["LSTM_LR"],         
-        epochs=CONFIG["LSTM_EPOCHS"],       
-        dt=dt,
-        weight_decay=CONFIG["LSTM_WEIGHT_DECAY"], 
-        dropout=CONFIG["LSTM_DROPOUT"]        
-    )
-    lstm_est.fit(data, dt)
-
-    # =========================================================
-    # 5. Generation (With Jumps)
-    # =========================================================
-    logger.info("\n[Generation] Simulating paths...")
+    results_store = {}
+    metrics_store = {} # {Method: {train_time, gen_time, WD, ACF_MSE}}
     
     n_test = min(CONFIG["N_GEN_PATHS"], len(data))
-    
-    # Dynamic Sampling logic
     test_idx = np.random.choice(len(data), n_test, replace=False)
     test_x0 = data[test_idx, 0, :] 
     real_paths_subset = data[test_idx]
     
-    logger.info(f"   Generating {n_test} test paths...")
-    
-    # --- Construct Reference Measures (Mixed or Simple) ---
-    if CONFIG["USE_JUMPS"]:
-        ref_kernel = JumpDiffusionReference(vol_calibrator, jump_detector, volatility_multiplier=CONFIG["KERNEL_TEMP_SCALE"])
-        ref_lstm   = JumpDiffusionReference(vol_calibrator, jump_detector, volatility_multiplier=CONFIG["LSTM_TEMP_SCALE"])
-    else:
-        ref_kernel = LocalVolatilityReference(vol_calibrator, volatility_multiplier=CONFIG["KERNEL_TEMP_SCALE"])
-        ref_lstm   = LocalVolatilityReference(vol_calibrator, volatility_multiplier=CONFIG["LSTM_TEMP_SCALE"])
-
-    # Kernel Gen
-    paths_kernel = euler_maruyama_generator(
-        test_x0, time_grid, lambda t,x: kernel_est.predict(t,x), ref_kernel, n_paths=n_test
-    )
-    
-    # LSTM Gen
-    dampening = CONFIG["LSTM_DRIFT_DAMPENING"]
-    paths_lstm = euler_maruyama_generator(
-        test_x0, time_grid, lambda t,x: lstm_est.predict(t,x)*dampening, ref_lstm, n_paths=n_test
-    )
-    
-    # =========================================================
-    # 6. Visualization
-    # =========================================================
-    logger.info("\n[Visualization] Producing Plots...")
-    
-    save_path_returns = logger.get_save_path("returns_comparison.png")
-    plot_method_comparison(time_grid, real_paths_subset, paths_kernel, paths_lstm, save_path=save_path_returns)
-    logger.info(f"   Saved returns plot to: {save_path_returns}")
-    
-    if CONFIG["USE_REAL_DATA"]:
-        S0 = 100.0
-        real_prices = reconstruct_prices(S0, real_paths_subset)
-        lstm_prices = reconstruct_prices(S0, paths_lstm)
+    for model_name in CONFIG["MODELS_TO_RUN"]:
+        logger.info(f"\n>>> Pipeline: {model_name}")
+        metrics_store[model_name] = {}
         
-        save_path_prices = logger.get_save_path("price_reconstruction.png")
-        plot_price_reconstruction(
-            real_prices, 
-            lstm_prices, 
-            "LSTM (Jump-Diff)", 
-            CONFIG["TICKER"], 
-            save_path=save_path_prices
-        )
-        logger.info(f"   Saved price plot to: {save_path_prices}")
+        # Reference Measure
+        if model_name == 'Kernel': t_scale = CONFIG["KERNEL_TEMP_SCALE"]
+        elif model_name == 'SBTS-LSTM': t_scale = CONFIG["LSTM_TEMP_SCALE"]
+        else: t_scale = CONFIG["LIGHTSB_TEMP_SCALE"]
+            
+        if CONFIG["USE_JUMPS"]:
+            ref_proc = JumpDiffusionReference(vol_calibrator, jump_detector, volatility_multiplier=t_scale)
+        else:
+            ref_proc = LocalVolatilityReference(vol_calibrator, volatility_multiplier=t_scale)
+            
+        # Training
+        drift_fn = None
+        start_t = time.time()
+        
+        if model_name == 'Kernel':
+            best_h = 0.05
+            if CONFIG["USE_CV_FOR_KERNEL"]:
+                logger.info("   [Opt] Bandwidth BayesOpt...")
+                ref_cv = LocalVolatilityReference(vol_calibrator, 1.0)
+                def cv_sim(start, drift):
+                    return euler_maruyama_generator(start, time_grid, drift, ref_cv, len(start))
+                selector = BandwidthSelector(n_trials=CONFIG["BO_N_TRIALS"], n_splits=3)
+                best_h = selector.fit(data, KernelDriftEstimator, cv_sim, dt)
+                plot_bandwidth_optimization(selector.get_history(), best_h, save_path=logger.get_save_path("bandwidth_bayes_opt.png"))
+            
+            estimator = KernelDriftEstimator(bandwidth=best_h)
+            estimator.fit(data, dt)
+            drift_fn = lambda t,x: estimator.predict(t, x)
+            
+        elif model_name == 'SBTS-LSTM':
+            estimator = LSTMDriftEstimator(
+                input_dim=n_assets, hidden_size=CONFIG["LSTM_HIDDEN"],
+                lr=CONFIG["LSTM_LR"], epochs=CONFIG["LSTM_EPOCHS"], dt=dt,
+                weight_decay=CONFIG["LSTM_WEIGHT_DECAY"], dropout=CONFIG["LSTM_DROPOUT"]
+            )
+            estimator.fit(data, dt)
+            drift_fn = lambda t,x: estimator.predict(t, x) * CONFIG["LSTM_DRIFT_DAMPENING"]
+            
+        elif model_name == 'LightSB':
+            X_curr = data[:, :-1, :].reshape(-1, n_assets)
+            X_next = data[:, 1:, :].reshape(-1, n_assets)
+            x0_t = torch.tensor(X_curr, dtype=torch.float32)
+            x1_t = torch.tensor(X_next, dtype=torch.float32)
+            
+            lsb = LightSBTrainer(dim=n_assets, n_components=CONFIG["LIGHTSB_COMPONENTS"], lr=CONFIG["LIGHTSB_LR"], min_cov=CONFIG["LIGHTSB_MIN_COV"])
+            logger.info("   [LightSB] Training GMM...")
+            for i in range(CONFIG["LIGHTSB_STEPS"]):
+                idx = np.random.choice(len(x0_t), 1024)
+                lsb.train_step(x0_t[idx], x1_t[idx])
+                
+            drift_fn = lambda t,x: lsb.get_drift(t, x, clip_val=5.0)
+            
+        metrics_store[model_name]['train_time'] = time.time() - start_t
+        
+        # Generation
+        logger.info(f"   [Gen] Simulating {n_test} paths...")
+        start_t = time.time()
+        gen_paths = euler_maruyama_generator(test_x0, time_grid, drift_fn, ref_proc, n_paths=n_test)
+        metrics_store[model_name]['gen_time'] = time.time() - start_t
+        
+        results_store[model_name] = gen_paths
+        
+        # Eval
+        if not np.isnan(gen_paths).any():
+            wd = np.mean([wasserstein_distance_1d(real_paths_subset[:, -1, i], gen_paths[:, -1, i]) 
+                          for i in range(min(5, n_assets))])
+            
+            acf_real = _calc_autocorr(real_paths_subset)
+            acf_gen = _calc_autocorr(gen_paths)
+            acf_mse = np.mean((acf_real - acf_gen)**2)
+            
+            metrics_store[model_name]['WD'] = wd
+            metrics_store[model_name]['ACF_MSE'] = acf_mse
+        else:
+            metrics_store[model_name]['WD'] = np.nan
+            metrics_store[model_name]['ACF_MSE'] = np.nan
 
-    logger.info(f"\n[Done] All results saved in: {logger.run_dir}")
+    # =========================================================
+    # 4. Visualization & Reporting
+    # =========================================================
+    logger.info("\n[Visualization] Generating Reports...")
+    
+    # A. Performance Bar Charts (The 1x4 Plot)
+    df_metrics = pd.DataFrame(metrics_store).T
+    print("\n--- Performance Summary ---")
+    print(df_metrics)
+    from utils.visualization import plot_performance_metrics
+    plot_performance_metrics(df_metrics, save_path=logger.get_save_path("performance_metrics.png"))
+    
+    # B. Price Reconstruction
+    S0 = 100.0
+    real_prices = reconstruct_prices(S0, real_paths_subset)
+    gen_prices_dict = {name: reconstruct_prices(S0, paths) for name, paths in results_store.items()}
+    
+    # C. Comprehensive Comparison (The 2x3 Plot)
+    plot_comprehensive_comparison(
+        time_grid, 
+        real_paths_subset, 
+        results_store,
+        real_prices=real_prices,
+        gen_prices_dict=gen_prices_dict,
+        save_path=logger.get_save_path("final_comparison.png")
+    )
+    
+    if n_assets > 1:
+        plot_correlation_distribution(
+            real_paths_subset,
+            results_store,
+            save_path=logger.get_save_path("final_correlation_dist.png")
+        )
+
+    logger.info(f"\n[Done] Results saved in: {logger.run_dir}")
+
+    # D. Correlation Distribution
+    if n_assets > 1:
+        plot_correlation_distribution(
+            real_paths_subset,
+            results_store,
+            save_path=logger.get_save_path("final_correlation_dist.png")
+        )
+
+    # --- Volatility Surface Visualization ---
+    logger.info("   [Vis] Plotting Volatility Surface...")
+    # Use the flatten data range to define the grid
+    plot_volatility_surface(
+        vol_calibrator, 
+        data_range=data.flatten(), # Use full data range for x-axis limits
+        T=dt*CONFIG["SEQ_LEN"],    # Physical time horizon
+        save_path=logger.get_save_path("volatility_surface.png")
+    )
+    
+    logger.info(f"\n[Done] Full Benchmark Complete. Results in: {logger.run_dir}")
 
 if __name__ == "__main__":
     main()
