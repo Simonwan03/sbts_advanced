@@ -1,3 +1,55 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ============================================
+# Project-specific: Exclude generated outputs
+# ============================================
+
+# Experiment outputs (generated each run)
+experiments/
+outputs/
+
+# Large data files
+data/*.csv
+data/*.parquet
+*.h5
+*.hdf5
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
