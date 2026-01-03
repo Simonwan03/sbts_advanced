@@ -505,3 +505,315 @@ def plot_jumps_on_price(dates, returns, tickers, threshold_std=4.0, save_path="o
     plt.savefig(save_path)
     print(f"[Plot Saved] {save_path}")
     plt.close()
+
+# ==============================================================================
+# NEW: SOTA Comparison Visualizations
+# ==============================================================================
+
+# Extended style map for SOTA methods
+EXTENDED_STYLE_MAP = {
+    'Real':           {'color': 'black',   'ls': '--', 'marker': 'o', 'label': 'Real'},
+    'JD-SBTS-Neural': {'color': '#E64B35', 'ls': '-',  'marker': '^', 'label': 'JD-SBTS (Neural)'},
+    'JD-SBTS-Static': {'color': '#F39B7F', 'ls': '--', 'marker': 'v', 'label': 'JD-SBTS (Static)'},
+    'Numba-SB':       {'color': '#4DBBD5', 'ls': '-',  'marker': 's', 'label': 'Numba-SB'},
+    'LightSB':        {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'},
+    'TimeGAN':        {'color': '#3C5488', 'ls': '-',  'marker': 'D', 'label': 'TimeGAN'},
+    'Diffusion-TS':   {'color': '#9467BD', 'ls': '-',  'marker': 'P', 'label': 'Diffusion-TS'},
+    'Kernel':         {'color': '#8C564B', 'ls': '--', 'marker': 'o', 'label': 'Kernel'},
+    'SBTS-LSTM':      {'color': '#E64B35', 'ls': '--', 'marker': '^', 'label': 'LSTM'},
+}
+
+
+def plot_sota_comparison(real_data, results_store, metrics_store, save_path="outputs/sota_comparison.png"):
+    """
+    Comprehensive SOTA comparison visualization.
+    
+    Creates a 3x3 grid showing:
+    - Row 1: Sample paths for top 3 methods
+    - Row 2: Distribution comparisons (terminal, returns, volatility)
+    - Row 3: Metrics comparison (bar charts)
+    
+    Args:
+        real_data: (N, T, D) real time series
+        results_store: Dict of {method_name: generated_paths}
+        metrics_store: Dict of {method_name: {metric: value}}
+        save_path: Path to save the figure
+    """
+    set_style()
+    _ensure_dir(save_path)
+    
+    fig = plt.figure(figsize=(20, 16))
+    
+    methods = list(results_store.keys())
+    n_methods = len(methods)
+    
+    # =========================================
+    # Row 1: Sample Paths (3 columns)
+    # =========================================
+    top_methods = methods[:min(3, n_methods)]
+    
+    for i, method in enumerate(top_methods):
+        ax = fig.add_subplot(3, 3, i + 1)
+        style = EXTENDED_STYLE_MAP.get(method, {'color': 'blue', 'ls': '-'})
+        gen_data = results_store[method]
+        
+        # Plot real paths (gray background)
+        n_plot = min(30, len(real_data))
+        for j in range(n_plot):
+            ax.plot(real_data[j, :, 0], color='gray', alpha=0.1, linewidth=0.5)
+        
+        # Plot generated paths
+        if not np.isnan(gen_data).any():
+            n_gen_plot = min(15, len(gen_data))
+            for j in range(n_gen_plot):
+                ax.plot(gen_data[j, :, 0], color=style['color'], alpha=0.4, linewidth=0.8)
+            
+            # Mean paths
+            ax.plot(np.mean(real_data[:, :, 0], axis=0), 'k--', linewidth=2, label='Real Mean')
+            ax.plot(np.mean(gen_data[:, :, 0], axis=0), color=style['color'], linewidth=2, label=f'{method} Mean')
+        
+        ax.set_title(f'{method}', fontweight='bold', fontsize=12)
+        ax.set_xlabel('Time Step')
+        ax.set_ylabel('Value')
+        ax.legend(loc='upper left', fontsize=8)
+    
+    # =========================================
+    # Row 2: Distribution Comparisons
+    # =========================================
+    
+    # 2.1 Terminal Distribution
+    ax_term = fig.add_subplot(3, 3, 4)
+    sns.kdeplot(real_data[:, -1, 0], ax=ax_term, color='black', fill=True, alpha=0.3, label='Real', linewidth=2)
+    
+    for method in methods:
+        gen_data = results_store[method]
+        if np.isnan(gen_data).any():
+            continue
+        style = EXTENDED_STYLE_MAP.get(method, {'color': 'blue', 'ls': '-'})
+        sns.kdeplot(gen_data[:, -1, 0], ax=ax_term, color=style['color'], 
+                    linestyle=style['ls'], linewidth=2, label=method)
+    
+    ax_term.set_title('Terminal Distribution', fontweight='bold')
+    ax_term.set_xlabel('Value')
+    ax_term.legend(fontsize=8)
+    
+    # 2.2 Returns Distribution (Fat Tails)
+    ax_ret = fig.add_subplot(3, 3, 5)
+    
+    # Compute returns
+    real_returns = np.diff(real_data[:, :, 0], axis=1).flatten()
+    sns.kdeplot(real_returns, ax=ax_ret, color='black', fill=True, alpha=0.3, label='Real', linewidth=2)
+    
+    for method in methods:
+        gen_data = results_store[method]
+        if np.isnan(gen_data).any():
+            continue
+        style = EXTENDED_STYLE_MAP.get(method, {'color': 'blue', 'ls': '-'})
+        gen_returns = np.diff(gen_data[:, :, 0], axis=1).flatten()
+        sns.kdeplot(gen_returns, ax=ax_ret, color=style['color'], 
+                    linestyle=style['ls'], linewidth=2, label=method)
+    
+    ax_ret.set_title('Returns Distribution (Fat Tails)', fontweight='bold')
+    ax_ret.set_xlabel('Return')
+    ax_ret.legend(fontsize=8)
+    
+    # 2.3 ACF Comparison
+    ax_acf = fig.add_subplot(3, 3, 6)
+    max_lag = 15
+    lags = np.arange(max_lag)
+    
+    real_acf = _calc_autocorr(real_data, max_lag)
+    ax_acf.plot(lags, real_acf, 'ko-', linewidth=2, markersize=6, label='Real')
+    
+    for method in methods:
+        gen_data = results_store[method]
+        if np.isnan(gen_data).any():
+            continue
+        style = EXTENDED_STYLE_MAP.get(method, {'color': 'blue', 'marker': 'x', 'ls': '-'})
+        gen_acf = _calc_autocorr(gen_data, max_lag)
+        ax_acf.plot(lags, gen_acf, color=style['color'], marker=style['marker'], 
+                    linestyle=style['ls'], linewidth=1.5, markersize=5, label=method)
+    
+    ax_acf.set_title('Autocorrelation Function', fontweight='bold')
+    ax_acf.set_xlabel('Lag')
+    ax_acf.set_ylabel('ACF')
+    ax_acf.legend(fontsize=8)
+    
+    # =========================================
+    # Row 3: Metrics Bar Charts
+    # =========================================
+    
+    # Convert metrics to DataFrame
+    df_metrics = pd.DataFrame(metrics_store).T
+    
+    # 3.1 Wasserstein Distance
+    ax_wd = fig.add_subplot(3, 3, 7)
+    if 'WD' in df_metrics.columns:
+        colors = [EXTENDED_STYLE_MAP.get(m, {'color': 'gray'})['color'] for m in df_metrics.index]
+        bars = ax_wd.bar(range(len(df_metrics)), df_metrics['WD'].values, color=colors)
+        ax_wd.set_xticks(range(len(df_metrics)))
+        ax_wd.set_xticklabels(df_metrics.index, rotation=45, ha='right', fontsize=9)
+        ax_wd.set_title('Wasserstein Distance ↓', fontweight='bold')
+        ax_wd.set_ylabel('WD')
+        
+        # Add value labels
+        for bar, val in zip(bars, df_metrics['WD'].values):
+            if not np.isnan(val):
+                ax_wd.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                          f'{val:.4f}', ha='center', va='bottom', fontsize=8)
+    
+    # 3.2 ACF MSE
+    ax_acf_mse = fig.add_subplot(3, 3, 8)
+    if 'ACF_MSE' in df_metrics.columns:
+        colors = [EXTENDED_STYLE_MAP.get(m, {'color': 'gray'})['color'] for m in df_metrics.index]
+        bars = ax_acf_mse.bar(range(len(df_metrics)), df_metrics['ACF_MSE'].values, color=colors)
+        ax_acf_mse.set_xticks(range(len(df_metrics)))
+        ax_acf_mse.set_xticklabels(df_metrics.index, rotation=45, ha='right', fontsize=9)
+        ax_acf_mse.set_title('ACF MSE ↓', fontweight='bold')
+        ax_acf_mse.set_ylabel('MSE')
+        
+        for bar, val in zip(bars, df_metrics['ACF_MSE'].values):
+            if not np.isnan(val):
+                ax_acf_mse.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                               f'{val:.6f}', ha='center', va='bottom', fontsize=8)
+    
+    # 3.3 Discriminative Score (if available)
+    ax_disc = fig.add_subplot(3, 3, 9)
+    if 'Disc_Score' in df_metrics.columns:
+        colors = [EXTENDED_STYLE_MAP.get(m, {'color': 'gray'})['color'] for m in df_metrics.index]
+        bars = ax_disc.bar(range(len(df_metrics)), df_metrics['Disc_Score'].values, color=colors)
+        ax_disc.set_xticks(range(len(df_metrics)))
+        ax_disc.set_xticklabels(df_metrics.index, rotation=45, ha='right', fontsize=9)
+        ax_disc.set_title('Discriminative Score ↓', fontweight='bold')
+        ax_disc.set_ylabel('Score')
+        ax_disc.axhline(y=0, color='green', linestyle='--', alpha=0.5, label='Ideal')
+        
+        for bar, val in zip(bars, df_metrics['Disc_Score'].values):
+            if not np.isnan(val):
+                ax_disc.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                            f'{val:.4f}', ha='center', va='bottom', fontsize=8)
+    else:
+        # Show training time instead
+        if 'train_time' in df_metrics.columns:
+            colors = [EXTENDED_STYLE_MAP.get(m, {'color': 'gray'})['color'] for m in df_metrics.index]
+            bars = ax_disc.bar(range(len(df_metrics)), df_metrics['train_time'].values, color=colors)
+            ax_disc.set_xticks(range(len(df_metrics)))
+            ax_disc.set_xticklabels(df_metrics.index, rotation=45, ha='right', fontsize=9)
+            ax_disc.set_title('Training Time (s)', fontweight='bold')
+            ax_disc.set_ylabel('Seconds')
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+
+def plot_discriminative_results(metrics_store, save_path="outputs/discriminative_results.png"):
+    """
+    Plot discriminative and predictive score comparison.
+    
+    Args:
+        metrics_store: Dict of {method_name: {metric: value}}
+        save_path: Path to save the figure
+    """
+    set_style()
+    _ensure_dir(save_path)
+    
+    df_metrics = pd.DataFrame(metrics_store).T
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Discriminative Score
+    ax1 = axes[0]
+    if 'Disc_Score' in df_metrics.columns:
+        colors = [EXTENDED_STYLE_MAP.get(m, {'color': 'gray'})['color'] for m in df_metrics.index]
+        bars = ax1.bar(range(len(df_metrics)), df_metrics['Disc_Score'].values, color=colors)
+        ax1.set_xticks(range(len(df_metrics)))
+        ax1.set_xticklabels(df_metrics.index, rotation=45, ha='right')
+        ax1.set_title('Discriminative Score (Lower = Better)', fontweight='bold', fontsize=12)
+        ax1.set_ylabel('Score')
+        ax1.axhline(y=0, color='green', linestyle='--', alpha=0.7, label='Ideal (0.0)')
+        ax1.axhline(y=0.5, color='red', linestyle='--', alpha=0.7, label='Worst (0.5)')
+        ax1.legend()
+        
+        for bar, val in zip(bars, df_metrics['Disc_Score'].values):
+            if not np.isnan(val):
+                ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                        f'{val:.4f}', ha='center', va='bottom', fontsize=10)
+    
+    # Predictive Score
+    ax2 = axes[1]
+    if 'Pred_Score' in df_metrics.columns:
+        colors = [EXTENDED_STYLE_MAP.get(m, {'color': 'gray'})['color'] for m in df_metrics.index]
+        bars = ax2.bar(range(len(df_metrics)), df_metrics['Pred_Score'].values, color=colors)
+        ax2.set_xticks(range(len(df_metrics)))
+        ax2.set_xticklabels(df_metrics.index, rotation=45, ha='right')
+        ax2.set_title('Predictive Score (Lower = Better)', fontweight='bold', fontsize=12)
+        ax2.set_ylabel('MAE')
+        
+        for bar, val in zip(bars, df_metrics['Pred_Score'].values):
+            if not np.isnan(val):
+                ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001, 
+                        f'{val:.4f}', ha='center', va='bottom', fontsize=10)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
+
+
+def plot_method_ranking(metrics_store, save_path="outputs/method_ranking.png"):
+    """
+    Create a radar chart comparing all methods across metrics.
+    
+    Args:
+        metrics_store: Dict of {method_name: {metric: value}}
+        save_path: Path to save the figure
+    """
+    set_style()
+    _ensure_dir(save_path)
+    
+    df_metrics = pd.DataFrame(metrics_store).T
+    
+    # Select metrics for radar chart
+    radar_metrics = ['WD', 'ACF_MSE', 'Disc_Score', 'Pred_Score']
+    available_metrics = [m for m in radar_metrics if m in df_metrics.columns]
+    
+    if len(available_metrics) < 3:
+        print("[Warning] Not enough metrics for radar chart")
+        return
+    
+    # Normalize metrics (lower is better, so invert)
+    df_norm = df_metrics[available_metrics].copy()
+    for col in df_norm.columns:
+        max_val = df_norm[col].max()
+        min_val = df_norm[col].min()
+        if max_val > min_val:
+            df_norm[col] = 1 - (df_norm[col] - min_val) / (max_val - min_val)
+        else:
+            df_norm[col] = 1.0
+    
+    # Create radar chart
+    n_metrics = len(available_metrics)
+    angles = np.linspace(0, 2 * np.pi, n_metrics, endpoint=False).tolist()
+    angles += angles[:1]  # Close the polygon
+    
+    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
+    
+    for method in df_norm.index:
+        values = df_norm.loc[method].values.tolist()
+        values += values[:1]  # Close the polygon
+        
+        style = EXTENDED_STYLE_MAP.get(method, {'color': 'gray'})
+        ax.plot(angles, values, 'o-', linewidth=2, label=method, color=style['color'])
+        ax.fill(angles, values, alpha=0.1, color=style['color'])
+    
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(available_metrics, fontsize=11)
+    ax.set_title('Method Comparison (Higher = Better)', fontweight='bold', fontsize=14, pad=20)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"[Plot Saved] {save_path}")
+    plt.close()
