@@ -8,11 +8,12 @@ import pandas as pd
 from core.solver import euler_maruyama_generator
 from core.drift_estimators import KernelDriftEstimator, LSTMDriftEstimator
 from core.lightsb import LightSBTrainer 
-from core.reference import LocalVolatilityReference, JumpDiffusionReference
+from core.reference import LocalVolatilityReference, JumpDiffusionReference, NeuralJumpDiffusionReference, create_reference_measure
 from core.bandwidth import BandwidthSelector
 
 from models.calibration import VolatilityCalibrator
 from models.jumps import JumpDetector
+from models.neural_jumps import NeuralJumpDetector, NeuralPointProcess
 
 # Visualization
 from utils.visualization import (
@@ -45,9 +46,16 @@ def main():
         "MODELS_TO_RUN": ["Kernel", "SBTS-LSTM", "LightSB"], 
         
         # Physics
-        "USE_JUMPS": True,          
+        "USE_JUMPS": True,
+        "USE_NEURAL_JUMPS": False,  # NEW: Toggle Neural MJD (endogenous jumps)
         "JUMP_THRESHOLD_STD": 4.0,  
         "VOL_BANDWIDTH": 0.5,
+        
+        # Neural Jump Parameters (only used if USE_NEURAL_JUMPS=True)
+        "NEURAL_JUMP_HIDDEN_DIM": 64,
+        "NEURAL_JUMP_LR": 0.001,
+        "NEURAL_JUMP_EPOCHS": 50,
+        "NEURAL_JUMP_SEQ_LEN": 10,
         
         # Hyperparams
         "USE_CV_FOR_KERNEL": True,
@@ -102,19 +110,39 @@ def main():
     # =========================================================
     # 2. Calibration
     # =========================================================
-    jump_detector = JumpDetector(dt=dt, threshold_multiplier=CONFIG["JUMP_THRESHOLD_STD"])
-    data_for_vol = data.copy()
-
+    # Initialize jump detector (static or neural based on config)
+    neural_jump_detector = None
+    
     if CONFIG["USE_JUMPS"]:
         logger.info("\n[Jumps] Detecting jumps (Global)...")
-        jump_detector.fit(data)
         
-        # Purification logic...
-        flat_data = data.flatten()
-        sigma_robust = np.median(np.abs(flat_data)) / 0.6745
-        threshold = CONFIG["JUMP_THRESHOLD_STD"] * sigma_robust * np.sqrt(dt)
-        data_for_vol = np.clip(data, -threshold, threshold)
+        if CONFIG.get("USE_NEURAL_JUMPS", False):
+            # Neural MJD: time-varying intensity λ(t)
+            logger.info("   [Jumps] Using Neural MJD (endogenous jumps)")
+            neural_jump_detector = NeuralJumpDetector(
+                dt=dt,
+                input_dim=n_assets,
+                hidden_dim=CONFIG.get("NEURAL_JUMP_HIDDEN_DIM", 64),
+                threshold_multiplier=CONFIG["JUMP_THRESHOLD_STD"],
+                lr=CONFIG.get("NEURAL_JUMP_LR", 0.001),
+                epochs=CONFIG.get("NEURAL_JUMP_EPOCHS", 50)
+            )
+            neural_jump_detector.fit(data, seq_len=CONFIG.get("NEURAL_JUMP_SEQ_LEN", 10))
+            jump_detector = neural_jump_detector  # Use neural detector
+        else:
+            # Static MJD: constant intensity λ
+            jump_detector = JumpDetector(dt=dt, threshold_multiplier=CONFIG["JUMP_THRESHOLD_STD"])
+            jump_detector.fit(data)
         
+        # REFACTORED: Use Filter & Interpolate instead of Clipping
+        # Old (incorrect): data_for_vol = np.clip(data, -threshold, threshold)
+        # This caused "inverted U" volatility surface shape
+        # 
+        # New (correct): Use purified returns from JumpDetector
+        # This preserves proper "Smile/Skew" volatility surface shape
+        data_for_vol = jump_detector.get_purified_returns()
+        
+        # Visualization (only for real data)
         if CONFIG["USE_REAL_DATA"]:
             logger.info("   [Vis] Plotting improved jump visualizations...")
             
@@ -142,15 +170,16 @@ def main():
                     threshold_std=CONFIG["JUMP_THRESHOLD_STD"],
                     save_path=logger.get_save_path("jumps_zoom_2020.png")
                 )
-        # ----------------------------
-        
     else:
         logger.info("\n[Jumps] Jump detection disabled.")
+        jump_detector = JumpDetector(dt=dt, threshold_multiplier=CONFIG["JUMP_THRESHOLD_STD"])
+        data_for_vol = data.copy()
 
     
     logger.info("\n[Calibration] Fitting Volatility...")
     vol_calibrator = VolatilityCalibrator(dt=dt, method='kernel', bandwidth=CONFIG["VOL_BANDWIDTH"])
-    vol_calibrator.fit(data_for_vol)
+    # Pass both original data (for features) and purified data (for vol estimation)
+    vol_calibrator.fit(data, purified_trajectories=data_for_vol)
     
     # =========================================================
     # 3. Model Loop (With Metrics Collection)
@@ -172,8 +201,16 @@ def main():
         elif model_name == 'SBTS-LSTM': t_scale = CONFIG["LSTM_TEMP_SCALE"]
         else: t_scale = CONFIG["LIGHTSB_TEMP_SCALE"]
             
+        # Create reference measure using factory function
+        # Supports: LocalVolatility, StaticMJD, and NeuralMJD
         if CONFIG["USE_JUMPS"]:
-            ref_proc = JumpDiffusionReference(vol_calibrator, jump_detector, volatility_multiplier=t_scale)
+            ref_proc = create_reference_measure(
+                vol_calibrator=vol_calibrator,
+                jump_detector=jump_detector,
+                use_neural_jumps=CONFIG.get("USE_NEURAL_JUMPS", False),
+                volatility_multiplier=t_scale
+            )
+            logger.info(f"   [Ref] Using {ref_proc.get_type()}")
         else:
             ref_proc = LocalVolatilityReference(vol_calibrator, volatility_multiplier=t_scale)
             
