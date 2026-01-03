@@ -23,6 +23,19 @@ class StandardScaler:
 
     def inverse_transform(self, x):
         return x * self.std + self.mean
+    
+    def transform_tensor(self, x_tensor):
+        # Assumes self.mean/std are numpy, convert to tensor on fly or store as buffer
+        device = x_tensor.device
+        mean_t = torch.tensor(self.mean, device=device, dtype=x_tensor.dtype)
+        std_t = torch.tensor(self.std, device=device, dtype=x_tensor.dtype)
+        return (x_tensor - mean_t) / (std_t + 1e-8)
+
+    def inverse_transform_tensor(self, x_tensor):
+        device = x_tensor.device
+        mean_t = torch.tensor(self.mean, device=device, dtype=x_tensor.dtype)
+        std_t = torch.tensor(self.std, device=device, dtype=x_tensor.dtype)
+        return x_tensor * std_t + mean_t
 
 # ==========================================
 # 1. Kernel Drift Estimator
