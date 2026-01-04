@@ -177,19 +177,20 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     verbose = config.get('verbose', True)
     
     # Initialize experiment manager
+    model_name = config.get('model', 'jd_sbts')
     exp_manager = modules['ExperimentManager'](
-        experiment_name=config.get('experiment_name', 'experiment'),
-        base_dir=config.get('output_dir', 'experiments')
+        model_name=model_name,
+        base_dir=config.get('output_dir', 'experiments'),
+        config=config,
+        verbose=verbose
     )
-    
-    exp_manager.save_config(config)
     
     if verbose:
         print("=" * 70)
         print("JD-SBTS Experiment (New Architecture)")
         print("=" * 70)
-        print(f"Experiment: {exp_manager.experiment_name}")
-        print(f"Output dir: {exp_manager.experiment_dir}")
+        print(f"Experiment: {exp_manager.run_name}")
+        print(f"Output dir: {exp_manager.run_dir}")
         print()
     
     # ========================================
@@ -433,7 +434,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                 data[:n_generate],
                 generated_data,
                 metrics_results,
-                save_path=os.path.join(exp_manager.experiment_dir, 'model_comparison.png')
+                save_path=os.path.join(str(exp_manager.run_dir), 'model_comparison.png')
             )
             
             # Feedback analysis (if applicable)
@@ -441,12 +442,12 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                 viz['plot_stress_factor_dynamics'](
                     time_grid,
                     stress,
-                    save_path=os.path.join(exp_manager.experiment_dir, f'{model_name}_stress.png')
+                    save_path=os.path.join(str(exp_manager.run_dir), f'{model_name}_stress.png')
                 )
             
             # Legend
             viz['create_legend_figure'](
-                save_path=os.path.join(exp_manager.experiment_dir, 'legend.png')
+                save_path=os.path.join(str(exp_manager.run_dir), 'legend.png')
             )
             
         except Exception as e:
@@ -460,7 +461,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
         print("\n" + "=" * 70)
         print("Experiment Complete!")
         print("=" * 70)
-        print(f"\nResults saved to: {exp_manager.experiment_dir}")
+        print(f"\nResults saved to: {str(exp_manager.run_dir)}")
         print("\nMetrics Summary:")
         for model_name, metrics in metrics_results.items():
             print(f"\n  {model_name}:")
@@ -474,7 +475,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
         'metrics': metrics_results,
         'generated_data': generated_data,
         'stress_trajectories': stress_trajectories,
-        'experiment_dir': exp_manager.experiment_dir
+        'experiment_dir': str(exp_manager.run_dir)
     }
 
 
