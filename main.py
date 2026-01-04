@@ -1,554 +1,664 @@
+#!/usr/bin/env python3
 """
-JD-SBTS: Jump-Diffusion Schrödinger Bridge Time Series
-Main Entry Point with Neural MJD and SOTA Baselines
+JD-SBTS: Jump-Diffusion Schrödinger Bridge for Time Series Generation
 
-UPDATED:
-- Neural Jumps enabled by default (USE_NEURAL_JUMPS=True)
-- Added SOTA baselines: TimeGAN, Diffusion-TS
-- Enhanced drift estimation with Numba-accelerated kernel (from SBTS)
-- Comprehensive evaluation metrics: Discriminative Score, Predictive Score
-- Updated visualization with SOTA comparison
+Main entry point for running experiments and benchmarks.
+
+FEATURES:
+- JD-SBTS-F: Feedback mechanism with Jump-Volatility Interaction
+- Neural MJD: Time-varying jump intensity prediction
+- Numba acceleration for CPU-intensive computations
+- OOP architecture with Factory/Strategy patterns
+- Comprehensive evaluation metrics
+- Publication-quality visualizations
+
+Usage:
+    python main.py                          # Run with default config
+    python main.py --config config.json     # Run with custom config
+    python main.py --model jd_sbts_f        # Run specific model
+    python main.py --benchmark              # Run full benchmark
+    python main.py --legacy                 # Run legacy main_old.py
+
+Author: Manus AI
 """
+
+import argparse
+import json
+import os
+import sys
+import time
+import warnings
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 
 import numpy as np
-import os
-import torch
-import time
-import pandas as pd
 
-# Core Modules
-from core.solver import euler_maruyama_generator
-from core.drift_estimators import KernelDriftEstimator, LSTMDriftEstimator, TransformerDriftEstimator
-from core.lightsb import LightSBTrainer 
-from core.reference import LocalVolatilityReference, JumpDiffusionReference, NeuralJumpDiffusionReference, create_reference_measure
-from core.bandwidth import BandwidthSelector
-from core.numba_sb import NumbaMarkovianSB  # NEW: Numba-accelerated SB from SBTS
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from models.calibration import VolatilityCalibrator
-from models.jumps import JumpDetector
-from models.neural_jumps import NeuralJumpDetector, NeuralPointProcess
+# ============================================
+# Default Configuration
+# ============================================
 
-# SOTA Baselines
-from baselines.timegan import TimeGAN
-from baselines.diffusion_ts import DiffusionTS
+DEFAULT_CONFIG = {
+    # Experiment settings
+    'experiment_name': 'jdsbts_experiment',
+    'seed': 42,
+    'verbose': True,
+    
+    # Data settings
+    'data_source': 'etf',  # 'etf' or 'synthetic'
+    'tickers': ['SPY', 'QQQ', 'IWM', 'EEM', 'GLD'],
+    'start_date': '2020-01-01',
+    'end_date': '2024-01-01',
+    'window_size': 60,
+    'stride': 10,
+    
+    # Synthetic data settings
+    'synthetic_type': 'gbm_jump',
+    'n_synthetic_samples': 500,
+    
+    # Model settings
+    'models_to_run': ['jd_sbts', 'jd_sbts_f'],
+    
+    # JD-SBTS settings
+    'use_neural_jumps': False,
+    'use_feedback': True,
+    'jump_threshold_std': 4.0,
+    'feedback_kappa': 5.0,
+    'feedback_gamma': 0.5,
+    
+    # Drift estimation
+    'drift_estimator': 'lstm',
+    'lstm_hidden': 128,
+    'lstm_epochs': 50,
+    'lstm_lr': 0.005,
+    'lstm_dropout': 0.3,
+    
+    # Generation settings
+    'n_generate': 100,
+    'n_steps': None,  # None = same as training
+    
+    # Evaluation settings
+    'run_discriminative': True,
+    'run_predictive': True,
+    'acf_max_lag': 15,
+    
+    # Output settings
+    'output_dir': 'experiments',
+    'save_models': True,
+    'save_plots': True,
+}
 
-# Evaluation Metrics
-from metrics.discriminative_score import discriminative_score_metrics
-from metrics.predictive_score import predictive_score_metrics
-from metrics.statistical_metrics import compute_all_metrics
 
-# Visualization
-from utils.visualization import (
-    plot_comprehensive_comparison, 
-    plot_performance_metrics,
-    plot_volatility_surface,
-    plot_bandwidth_optimization, 
-    plot_correlation_distribution,
-    plot_multi_asset_jumps,
-    plot_sota_comparison,  # NEW
-    plot_discriminative_results,  # NEW
-    set_style,
-    _calc_autocorr
-)
-from utils.data_loader import RealDataLoader, reconstruct_prices
-from utils.logger import Logger
-from utils.metrics import wasserstein_distance_1d
+# ============================================
+# Import Handlers (with fallbacks)
+# ============================================
+
+def import_new_modules():
+    """Import new modular architecture."""
+    try:
+        from models.factory import get_model, list_models, get_default_config, create_model_comparison
+        from data.loaders import load_etf_data, load_synthetic_data, create_sliding_windows
+        from utils.experiment_manager import ExperimentManager
+        from metrics import compute_all_metrics, discriminative_score_metrics, predictive_score_metrics
+        from metrics.numba_metrics import compute_all_metrics_numba, compute_stylized_facts_numba
+        
+        return {
+            'get_model': get_model,
+            'list_models': list_models,
+            'get_default_config': get_default_config,
+            'create_model_comparison': create_model_comparison,
+            'load_etf_data': load_etf_data,
+            'load_synthetic_data': load_synthetic_data,
+            'create_sliding_windows': create_sliding_windows,
+            'ExperimentManager': ExperimentManager,
+            'compute_all_metrics': compute_all_metrics,
+            'discriminative_score_metrics': discriminative_score_metrics,
+            'predictive_score_metrics': predictive_score_metrics,
+            'compute_all_metrics_numba': compute_all_metrics_numba,
+            'compute_stylized_facts_numba': compute_stylized_facts_numba,
+        }
+    except ImportError as e:
+        warnings.warn(f"New modules not available: {e}")
+        return None
+
+
+def import_visualization():
+    """Import visualization modules."""
+    try:
+        from utils.visualization import (
+            set_style, plot_performance_metrics, plot_comprehensive_comparison,
+            plot_correlation_distribution, plot_volatility_surface
+        )
+        from visualization.feedback_plots import (
+            plot_stress_factor_dynamics, plot_feedback_comparison,
+            plot_model_comparison_grid, create_legend_figure
+        )
+        return {
+            'set_style': set_style,
+            'plot_performance_metrics': plot_performance_metrics,
+            'plot_comprehensive_comparison': plot_comprehensive_comparison,
+            'plot_correlation_distribution': plot_correlation_distribution,
+            'plot_volatility_surface': plot_volatility_surface,
+            'plot_stress_factor_dynamics': plot_stress_factor_dynamics,
+            'plot_feedback_comparison': plot_feedback_comparison,
+            'plot_model_comparison_grid': plot_model_comparison_grid,
+            'create_legend_figure': create_legend_figure,
+        }
+    except ImportError as e:
+        warnings.warn(f"Visualization not fully available: {e}")
+        return None
+
+
+# ============================================
+# Main Experiment Runner (New Architecture)
+# ============================================
+
+def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run experiment using new modular architecture.
+    
+    Args:
+        config: Experiment configuration
+    
+    Returns:
+        Dictionary of results
+    """
+    modules = import_new_modules()
+    viz = import_visualization()
+    
+    if modules is None:
+        raise ImportError("New modules not available. Use --legacy flag.")
+    
+    # Set random seed
+    np.random.seed(config.get('seed', 42))
+    
+    verbose = config.get('verbose', True)
+    
+    # Initialize experiment manager
+    exp_manager = modules['ExperimentManager'](
+        experiment_name=config.get('experiment_name', 'experiment'),
+        base_dir=config.get('output_dir', 'experiments')
+    )
+    
+    exp_manager.save_config(config)
+    
+    if verbose:
+        print("=" * 70)
+        print("JD-SBTS Experiment (New Architecture)")
+        print("=" * 70)
+        print(f"Experiment: {exp_manager.experiment_name}")
+        print(f"Output dir: {exp_manager.experiment_dir}")
+        print()
+    
+    # ========================================
+    # Load Data
+    # ========================================
+    if verbose:
+        print("[Phase 1] Loading Data...")
+    
+    data_source = config.get('data_source', 'etf')
+    
+    if data_source == 'etf':
+        try:
+            raw_data, time_grid, metadata = modules['load_etf_data'](
+                tickers=config.get('tickers', ['SPY', 'QQQ', 'IWM', 'EEM', 'GLD']),
+                start_date=config.get('start_date', '2020-01-01'),
+                end_date=config.get('end_date', '2024-01-01'),
+                return_type='log_returns'
+            )
+        except Exception as e:
+            warnings.warn(f"Failed to load ETF data: {e}. Using synthetic data.")
+            data_source = 'synthetic'
+    
+    if data_source == 'synthetic':
+        raw_data, time_grid, metadata = modules['load_synthetic_data'](
+            n_samples=config.get('n_synthetic_samples', 500),
+            n_steps=config.get('window_size', 60),
+            n_features=len(config.get('tickers', ['SPY', 'QQQ', 'IWM', 'EEM', 'GLD'])),
+            data_type=config.get('synthetic_type', 'gbm_jump'),
+            seed=config.get('seed', 42)
+        )
+    
+    # Create sliding windows
+    window_size = config.get('window_size', 60)
+    stride = config.get('stride', 10)
+    
+    if raw_data.shape[1] > window_size:
+        data = modules['create_sliding_windows'](raw_data, window_size, stride)
+    else:
+        data = raw_data
+    
+    # Update time grid
+    time_grid = np.linspace(0, 1, data.shape[1])
+    
+    if verbose:
+        print(f"  Data shape: {data.shape}")
+        print(f"  Time grid: {len(time_grid)} steps")
+    
+    exp_manager.log(f"Data loaded: shape={data.shape}")
+    
+    # ========================================
+    # Train Models
+    # ========================================
+    if verbose:
+        print("\n[Phase 2] Training Models...")
+    
+    models_to_run = config.get('models_to_run', ['jd_sbts', 'jd_sbts_f'])
+    
+    trained_models = {}
+    training_times = {}
+    
+    for model_name in models_to_run:
+        if verbose:
+            print(f"\n  Training {model_name}...")
+        
+        try:
+            # Get model config
+            model_config = modules['get_default_config'](model_name)
+            model_config.update(config)  # Override with experiment config
+            
+            # Create model
+            model = modules['get_model'](model_name, model_config)
+            
+            # Train
+            start_time = time.time()
+            model.fit(data, time_grid, verbose=verbose)
+            train_time = time.time() - start_time
+            
+            trained_models[model_name] = model
+            training_times[model_name] = train_time
+            
+            exp_manager.log(f"{model_name} trained in {train_time:.2f}s")
+            
+            if verbose:
+                print(f"  {model_name} training time: {train_time:.2f}s")
+        
+        except Exception as e:
+            warnings.warn(f"Failed to train {model_name}: {e}")
+            exp_manager.log(f"ERROR: {model_name} failed: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # ========================================
+    # Generate Samples
+    # ========================================
+    if verbose:
+        print("\n[Phase 3] Generating Samples...")
+    
+    n_generate = config.get('n_generate', 100)
+    n_steps = config.get('n_steps') or data.shape[1]
+    
+    generated_data = {}
+    generation_times = {}
+    stress_trajectories = {}
+    
+    for model_name, model in trained_models.items():
+        if verbose:
+            print(f"\n  Generating from {model_name}...")
+        
+        try:
+            start_time = time.time()
+            
+            # Check if model supports stress factor output
+            if hasattr(model, 'use_feedback') and model.use_feedback:
+                gen_paths, stress = model.generate(
+                    n_samples=n_generate,
+                    n_steps=n_steps,
+                    return_stress=True
+                )
+                stress_trajectories[model_name] = stress
+            else:
+                gen_paths = model.generate(
+                    n_samples=n_generate,
+                    n_steps=n_steps
+                )
+            
+            gen_time = time.time() - start_time
+            
+            generated_data[model_name] = gen_paths
+            generation_times[model_name] = gen_time
+            
+            exp_manager.log(f"{model_name} generated {n_generate} samples in {gen_time:.2f}s")
+            
+            if verbose:
+                print(f"  {model_name} generation time: {gen_time:.2f}s")
+                print(f"  Generated shape: {gen_paths.shape}")
+        
+        except Exception as e:
+            warnings.warn(f"Failed to generate from {model_name}: {e}")
+            exp_manager.log(f"ERROR: {model_name} generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # ========================================
+    # Evaluate Models
+    # ========================================
+    if verbose:
+        print("\n[Phase 4] Evaluating Models...")
+    
+    metrics_results = {}
+    
+    for model_name, gen_data in generated_data.items():
+        if verbose:
+            print(f"\n  Evaluating {model_name}...")
+        
+        try:
+            # Statistical metrics (Numba-accelerated)
+            stats = modules['compute_all_metrics_numba'](
+                data[:n_generate],  # Use subset of real data
+                gen_data,
+                max_acf_lag=config.get('acf_max_lag', 15)
+            )
+            
+            # Stylized facts
+            gen_returns = np.diff(gen_data, axis=1)
+            if gen_returns.ndim == 3:
+                gen_returns = gen_returns[:, :, 0]
+            stylized = modules['compute_stylized_facts_numba'](gen_returns.flatten())
+            
+            metrics = {
+                'train_time': training_times.get(model_name, 0),
+                'gen_time': generation_times.get(model_name, 0),
+                **stats,
+                **{f'stylized_{k}': v for k, v in stylized.items()}
+            }
+            
+            # Discriminative score (optional)
+            if config.get('run_discriminative', True):
+                try:
+                    disc_result = modules['discriminative_score_metrics'](
+                        data[:n_generate],
+                        gen_data
+                    )
+                    metrics['discriminative_score'] = disc_result.get('discriminative_score', 0.5)
+                except Exception as e:
+                    warnings.warn(f"Discriminative score failed: {e}")
+                    metrics['discriminative_score'] = 0.5
+            
+            # Predictive score (optional)
+            if config.get('run_predictive', True):
+                try:
+                    pred_result = modules['predictive_score_metrics'](
+                        data[:n_generate],
+                        gen_data
+                    )
+                    metrics['predictive_score'] = pred_result.get('predictive_score', 0)
+                except Exception as e:
+                    warnings.warn(f"Predictive score failed: {e}")
+                    metrics['predictive_score'] = 0
+            
+            metrics_results[model_name] = metrics
+            
+            if verbose:
+                print(f"    WD: {metrics.get('wasserstein_distance', 0):.6f}")
+                print(f"    ACF MSE: {metrics.get('acf_mse', 0):.6f}")
+                if 'discriminative_score' in metrics:
+                    print(f"    Disc Score: {metrics['discriminative_score']:.4f}")
+        
+        except Exception as e:
+            warnings.warn(f"Evaluation failed for {model_name}: {e}")
+            exp_manager.log(f"ERROR: {model_name} evaluation failed: {e}")
+    
+    # ========================================
+    # Save Results
+    # ========================================
+    if verbose:
+        print("\n[Phase 5] Saving Results...")
+    
+    # Save metrics
+    exp_manager.save_metrics(metrics_results)
+    
+    # Save models
+    if config.get('save_models', True):
+        for model_name, model in trained_models.items():
+            exp_manager.save_model(model, model_name)
+    
+    # ========================================
+    # Generate Plots
+    # ========================================
+    if config.get('save_plots', True) and viz is not None:
+        if verbose:
+            print("\n[Phase 6] Generating Plots...")
+        
+        try:
+            # Create metrics DataFrame
+            import pandas as pd
+            df_metrics = pd.DataFrame(metrics_results).T
+            df_metrics.index.name = 'Model'
+            
+            # Model comparison grid
+            viz['plot_model_comparison_grid'](
+                data[:n_generate],
+                generated_data,
+                metrics_results,
+                save_path=os.path.join(exp_manager.experiment_dir, 'model_comparison.png')
+            )
+            
+            # Feedback analysis (if applicable)
+            for model_name, stress in stress_trajectories.items():
+                viz['plot_stress_factor_dynamics'](
+                    time_grid,
+                    stress,
+                    save_path=os.path.join(exp_manager.experiment_dir, f'{model_name}_stress.png')
+                )
+            
+            # Legend
+            viz['create_legend_figure'](
+                save_path=os.path.join(exp_manager.experiment_dir, 'legend.png')
+            )
+            
+        except Exception as e:
+            warnings.warn(f"Plot generation failed: {e}")
+            exp_manager.log(f"ERROR: Plot generation failed: {e}")
+    
+    # ========================================
+    # Summary
+    # ========================================
+    if verbose:
+        print("\n" + "=" * 70)
+        print("Experiment Complete!")
+        print("=" * 70)
+        print(f"\nResults saved to: {exp_manager.experiment_dir}")
+        print("\nMetrics Summary:")
+        for model_name, metrics in metrics_results.items():
+            print(f"\n  {model_name}:")
+            print(f"    Training Time: {metrics.get('train_time', 0):.2f}s")
+            print(f"    Generation Time: {metrics.get('gen_time', 0):.2f}s")
+            print(f"    Wasserstein Distance: {metrics.get('wasserstein_distance', 0):.6f}")
+            print(f"    ACF MSE: {metrics.get('acf_mse', 0):.6f}")
+    
+    return {
+        'config': config,
+        'metrics': metrics_results,
+        'generated_data': generated_data,
+        'stress_trajectories': stress_trajectories,
+        'experiment_dir': exp_manager.experiment_dir
+    }
+
+
+def run_benchmark(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run full benchmark comparing all available models.
+    
+    Args:
+        config: Base configuration
+    
+    Returns:
+        Benchmark results
+    """
+    # All models to benchmark
+    all_models = [
+        'jd_sbts',
+        'jd_sbts_f',
+        'lightsb',
+        'numba_sb',
+        'timegan',
+        'diffusion_ts'
+    ]
+    
+    config['models_to_run'] = all_models
+    config['experiment_name'] = f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    return run_experiment_new(config)
+
+
+# ============================================
+# Legacy Runner
+# ============================================
+
+def run_legacy():
+    """Run the legacy main_old.py."""
+    import importlib.util
+    
+    legacy_path = os.path.join(os.path.dirname(__file__), 'main_old.py')
+    
+    if not os.path.exists(legacy_path):
+        raise FileNotFoundError("Legacy main_old.py not found")
+    
+    spec = importlib.util.spec_from_file_location("main_old", legacy_path)
+    legacy_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(legacy_module)
+    
+    if hasattr(legacy_module, 'main'):
+        legacy_module.main()
+    else:
+        raise AttributeError("Legacy module has no main() function")
+
+
+# ============================================
+# CLI Interface
+# ============================================
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='JD-SBTS: Jump-Diffusion Schrödinger Bridge for Time Series'
+    )
+    
+    parser.add_argument(
+        '--config', '-c',
+        type=str,
+        default=None,
+        help='Path to JSON configuration file'
+    )
+    
+    parser.add_argument(
+        '--model', '-m',
+        type=str,
+        default=None,
+        help='Specific model to run (e.g., jd_sbts_f)'
+    )
+    
+    parser.add_argument(
+        '--benchmark', '-b',
+        action='store_true',
+        help='Run full benchmark with all models'
+    )
+    
+    parser.add_argument(
+        '--legacy',
+        action='store_true',
+        help='Run legacy main_old.py instead of new architecture'
+    )
+    
+    parser.add_argument(
+        '--list-models',
+        action='store_true',
+        help='List available models and exit'
+    )
+    
+    parser.add_argument(
+        '--output', '-o',
+        type=str,
+        default='experiments',
+        help='Output directory'
+    )
+    
+    parser.add_argument(
+        '--seed', '-s',
+        type=int,
+        default=42,
+        help='Random seed'
+    )
+    
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Suppress verbose output'
+    )
+    
+    parser.add_argument(
+        '--synthetic',
+        action='store_true',
+        help='Use synthetic data instead of ETF data'
+    )
+    
+    return parser.parse_args()
 
 
 def main():
-    # =========================================================
-    # 0. Configuration
-    # =========================================================
-    CONFIG = {
-        # Data
-        "USE_REAL_DATA": True,
-        "FETCH_SP500": True,  
-        "SP500_LIMIT": 50,  # Reduced for faster testing
-        "START_DATE": "2020-01-01",
-        "END_DATE": "2023-12-31",
-        "SEQ_LEN": 60,
-        
-        # Models to Run
-        "MODELS_TO_RUN": [
-            "JD-SBTS-Neural",   # Our method with Neural MJD
-            "JD-SBTS-Static",   # Our method with Static MJD
-            "Numba-SB",         # Numba-accelerated SB (from SBTS)
-            "LightSB",          # Light Schrödinger Bridge
-            "TimeGAN",          # SOTA: TimeGAN baseline
-            "Diffusion-TS",     # SOTA: Diffusion-based TS
-        ],
-        
-        # Physics - Neural Jumps ENABLED by default
-        "USE_JUMPS": True,
-        "USE_NEURAL_JUMPS": True,  # CHANGED: Now True by default
-        "JUMP_THRESHOLD_STD": 4.0,  
-        "VOL_BANDWIDTH": 0.5,
-        
-        # Neural Jump Parameters
-        "NEURAL_JUMP_HIDDEN_DIM": 64,
-        "NEURAL_JUMP_LR": 0.001,
-        "NEURAL_JUMP_EPOCHS": 30,
-        "NEURAL_JUMP_SEQ_LEN": 10,
-        
-        # Drift Estimation Hyperparams
-        "USE_CV_FOR_KERNEL": True,
-        "BO_N_TRIALS": 10, 
-        "KERNEL_TEMP_SCALE": 1.1,
-        
-        "LSTM_HIDDEN": 128,
-        "LSTM_LR": 0.005,
-        "LSTM_EPOCHS": 50,
-        "LSTM_WEIGHT_DECAY": 1e-3,
-        "LSTM_DROPOUT": 0.3,
-        "LSTM_TEMP_SCALE": 1.1,
-        "LSTM_DRIFT_DAMPENING": 0.9,
-        "LSTM_USE_HUBER": True,  # NEW: Huber loss for robustness
-        
-        # Numba SB (from SBTS)
-        "NUMBA_SB_BANDWIDTH": 0.1,
-        "NUMBA_SB_MARKOV_ORDER": 3,
-        "NUMBA_SB_N_PI": 10,
-        
-        # LightSB
-        "LIGHTSB_COMPONENTS": 20,
-        "LIGHTSB_LR": 0.005,
-        "LIGHTSB_STEPS": 500,
-        "LIGHTSB_MIN_COV": 0.01,
-        "LIGHTSB_TEMP_SCALE": 1.1,
-        
-        # TimeGAN
-        "TIMEGAN_HIDDEN": 64,
-        "TIMEGAN_EPOCHS": 100,
-        "TIMEGAN_BATCH_SIZE": 128,
-        
-        # Diffusion-TS
-        "DIFFUSION_STEPS": 100,
-        "DIFFUSION_EPOCHS": 50,
-        
-        # Generation
-        "N_GEN_PATHS": 500, 
-        "SYNTHETIC_SAMPLES": 10000,
-        
-        # Evaluation
-        "EVAL_DISCRIMINATIVE": True,
-        "EVAL_PREDICTIVE": True,
-        "EVAL_ITERATIONS": 1000,
-        "EVAL_N_RUNS": 5,
-    }
-
-    logger = Logger(base_dir="experiments")
-    logger.info("=" * 60)
-    logger.info("   JD-SBTS Benchmark: Neural MJD + SOTA Comparison")
-    logger.info("=" * 60 + "\n")
-    logger.save_config(CONFIG)
-    set_style()
+    """Main entry point."""
+    args = parse_args()
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"[Device] Using: {device}")
+    # Run legacy if requested
+    if args.legacy:
+        print("Running legacy main_old.py...")
+        run_legacy()
+        return
     
-    # =========================================================
-    # 1. Data Loading
-    # =========================================================
-    if CONFIG["USE_REAL_DATA"]:
-        if CONFIG["FETCH_SP500"]:
-            tickers = RealDataLoader.get_sp500_tickers(limit=CONFIG["SP500_LIMIT"])
+    # List models and exit
+    if args.list_models:
+        modules = import_new_modules()
+        if modules:
+            print("\nAvailable Models:")
+            print("-" * 50)
+            for name, desc in modules['list_models']().items():
+                print(f"  {name}: {desc}")
+            print()
         else:
-            tickers = ["SPY", "QQQ", "IWM", "GLD", "TLT"]
-        logger.info(f"[Data] Mode: Real Data ({len(tickers)} Assets)")
-        loader = RealDataLoader(tickers, CONFIG["START_DATE"], CONFIG["END_DATE"])
-        loader.download()
-        data, mu, sigma = loader.get_sliding_windows(CONFIG["SEQ_LEN"])
-        dt = 1.0 / 252.0 
-        steps = CONFIG["SEQ_LEN"]
-        time_grid = np.linspace(0, steps * dt, steps)
-        n_assets = data.shape[-1]
-        logger.info(f"[Data] Shape: {data.shape} (samples, steps, assets)")
-    else:
-        # Synthetic data for testing
-        logger.info("[Data] Mode: Synthetic Data")
-        n_samples, steps, n_assets = 1000, CONFIG["SEQ_LEN"], 5
-        dt = 1.0 / 252.0
-        time_grid = np.linspace(0, steps * dt, steps)
-        data = np.random.randn(n_samples, steps, n_assets) * 0.02
-        tickers = [f"Asset_{i}" for i in range(n_assets)]
-
-    # =========================================================
-    # 2. Calibration (Neural MJD + Volatility)
-    # =========================================================
-    logger.info("\n" + "=" * 40)
-    logger.info("[Phase 2] Calibration")
-    logger.info("=" * 40)
+            print("New modules not available. Use --legacy flag.")
+        return
     
-    # Initialize detectors
-    static_jump_detector = JumpDetector(dt=dt, threshold_multiplier=CONFIG["JUMP_THRESHOLD_STD"])
-    neural_jump_detector = None
+    # Load configuration
+    config = DEFAULT_CONFIG.copy()
     
-    if CONFIG["USE_JUMPS"]:
-        logger.info("\n[Jumps] Calibrating jump parameters...")
+    if args.config:
+        with open(args.config, 'r') as f:
+            user_config = json.load(f)
+        config.update(user_config)
+    
+    # Override with CLI arguments
+    if args.model:
+        config['models_to_run'] = [args.model]
+    
+    if args.output:
+        config['output_dir'] = args.output
+    
+    if args.seed:
+        config['seed'] = args.seed
+    
+    if args.quiet:
+        config['verbose'] = False
+    
+    if args.synthetic:
+        config['data_source'] = 'synthetic'
+    
+    # Run experiment or benchmark
+    try:
+        if args.benchmark:
+            results = run_benchmark(config)
+        else:
+            results = run_experiment_new(config)
         
-        # Always fit static detector first
-        static_jump_detector.fit(data)
-        
-        # Fit neural detector if enabled
-        if CONFIG["USE_NEURAL_JUMPS"]:
-            logger.info("   [Neural MJD] Training intensity network...")
-            neural_jump_detector = NeuralJumpDetector(
-                dt=dt,
-                input_dim=n_assets,
-                hidden_dim=CONFIG["NEURAL_JUMP_HIDDEN_DIM"],
-                threshold_multiplier=CONFIG["JUMP_THRESHOLD_STD"],
-                lr=CONFIG["NEURAL_JUMP_LR"],
-                epochs=CONFIG["NEURAL_JUMP_EPOCHS"],
-                device=device
-            )
-            neural_jump_detector.fit(data, seq_len=CONFIG["NEURAL_JUMP_SEQ_LEN"])
-        
-        # Use purified returns for volatility calibration
-        data_for_vol = static_jump_detector.get_purified_returns()
-        
-        # Visualization
-        if CONFIG["USE_REAL_DATA"] and hasattr(loader, 'log_returns') and loader.log_returns is not None:
-            logger.info("   [Vis] Plotting jump visualizations...")
-            from utils.visualization import plot_jumps_on_price, plot_zoomed_crisis
-            cont_dates = pd.to_datetime(loader.raw_prices_df.index[1:])
-            plot_jumps_on_price(
-                cont_dates, loader.log_returns, tickers, 
-                threshold_std=CONFIG["JUMP_THRESHOLD_STD"],
-                save_path=logger.get_save_path("jumps_on_price.png")
-            )
-    else:
-        logger.info("\n[Jumps] Jump detection disabled.")
-        data_for_vol = data.copy()
-
-    # Volatility Calibration
-    logger.info("\n[Volatility] Fitting Local Volatility Surface...")
-    vol_calibrator = VolatilityCalibrator(dt=dt, method='kernel', bandwidth=CONFIG["VOL_BANDWIDTH"])
-    vol_calibrator.fit(data, purified_trajectories=data_for_vol)
+        print(f"\nExperiment completed. Results saved to: {results['experiment_dir']}")
     
-    # Log surface diagnostics
-    diag = vol_calibrator.get_surface_diagnostics()
-    if diag:
-        logger.info(f"   [Surface] Shape: {'Smile/Skew ✓' if diag.get('is_smile_shape') else 'Inverted U ✗'}")
-    
-    # =========================================================
-    # 3. Model Training & Generation
-    # =========================================================
-    logger.info("\n" + "=" * 40)
-    logger.info("[Phase 3] Model Training & Generation")
-    logger.info("=" * 40)
-    
-    results_store = {}
-    metrics_store = {}
-    
-    n_test = min(CONFIG["N_GEN_PATHS"], len(data))
-    test_idx = np.random.choice(len(data), n_test, replace=False)
-    test_x0 = data[test_idx, 0, :] 
-    real_paths_subset = data[test_idx]
-    
-    for model_name in CONFIG["MODELS_TO_RUN"]:
-        logger.info(f"\n>>> Training: {model_name}")
-        metrics_store[model_name] = {}
-        
-        try:
-            start_t = time.time()
-            gen_paths = None
-            
-            # ============================================
-            # JD-SBTS with Neural MJD (Our Main Method)
-            # ============================================
-            if model_name == "JD-SBTS-Neural":
-                # Reference measure with Neural MJD
-                ref_proc = create_reference_measure(
-                    vol_calibrator=vol_calibrator,
-                    jump_detector=neural_jump_detector if neural_jump_detector else static_jump_detector,
-                    use_neural_jumps=True,
-                    volatility_multiplier=CONFIG["LSTM_TEMP_SCALE"]
-                )
-                logger.info(f"   [Ref] {ref_proc.get_type()}")
-                
-                # LSTM Drift Estimator with Huber loss
-                estimator = LSTMDriftEstimator(
-                    input_dim=n_assets, 
-                    hidden_size=CONFIG["LSTM_HIDDEN"],
-                    lr=CONFIG["LSTM_LR"], 
-                    epochs=CONFIG["LSTM_EPOCHS"], 
-                    dt=dt,
-                    weight_decay=CONFIG["LSTM_WEIGHT_DECAY"], 
-                    dropout=CONFIG["LSTM_DROPOUT"],
-                    use_huber_loss=CONFIG["LSTM_USE_HUBER"]
-                )
-                estimator.fit(data, dt)
-                drift_fn = lambda t, x, est=estimator: est.predict(t, x) * CONFIG["LSTM_DRIFT_DAMPENING"]
-                
-                metrics_store[model_name]['train_time'] = time.time() - start_t
-                
-                # Generation
-                logger.info(f"   [Gen] Simulating {n_test} paths...")
-                start_t = time.time()
-                gen_paths = euler_maruyama_generator(test_x0, time_grid, drift_fn, ref_proc, n_paths=n_test)
-                metrics_store[model_name]['gen_time'] = time.time() - start_t
-            
-            # ============================================
-            # JD-SBTS with Static MJD
-            # ============================================
-            elif model_name == "JD-SBTS-Static":
-                ref_proc = create_reference_measure(
-                    vol_calibrator=vol_calibrator,
-                    jump_detector=static_jump_detector,
-                    use_neural_jumps=False,
-                    volatility_multiplier=CONFIG["LSTM_TEMP_SCALE"]
-                )
-                logger.info(f"   [Ref] {ref_proc.get_type()}")
-                
-                estimator = LSTMDriftEstimator(
-                    input_dim=n_assets, 
-                    hidden_size=CONFIG["LSTM_HIDDEN"],
-                    lr=CONFIG["LSTM_LR"], 
-                    epochs=CONFIG["LSTM_EPOCHS"], 
-                    dt=dt,
-                    weight_decay=CONFIG["LSTM_WEIGHT_DECAY"], 
-                    dropout=CONFIG["LSTM_DROPOUT"]
-                )
-                estimator.fit(data, dt)
-                drift_fn = lambda t, x, est=estimator: est.predict(t, x) * CONFIG["LSTM_DRIFT_DAMPENING"]
-                
-                metrics_store[model_name]['train_time'] = time.time() - start_t
-                
-                logger.info(f"   [Gen] Simulating {n_test} paths...")
-                start_t = time.time()
-                gen_paths = euler_maruyama_generator(test_x0, time_grid, drift_fn, ref_proc, n_paths=n_test)
-                metrics_store[model_name]['gen_time'] = time.time() - start_t
-            
-            # ============================================
-            # Numba-accelerated SB (from SBTS)
-            # ============================================
-            elif model_name == "Numba-SB":
-                logger.info("   [Numba-SB] Using Numba-accelerated kernel regression...")
-                numba_sb = NumbaMarkovianSB(
-                    bandwidth=CONFIG["NUMBA_SB_BANDWIDTH"],
-                    markov_order=CONFIG["NUMBA_SB_MARKOV_ORDER"],
-                    n_pi=CONFIG["NUMBA_SB_N_PI"],
-                    dt=dt
-                )
-                
-                metrics_store[model_name]['train_time'] = time.time() - start_t
-                
-                logger.info(f"   [Gen] Simulating {n_test} paths...")
-                start_t = time.time()
-                gen_paths = numba_sb.generate(data, n_samples=n_test)
-                metrics_store[model_name]['gen_time'] = time.time() - start_t
-            
-            # ============================================
-            # LightSB
-            # ============================================
-            elif model_name == "LightSB":
-                ref_proc = LocalVolatilityReference(vol_calibrator, volatility_multiplier=CONFIG["LIGHTSB_TEMP_SCALE"])
-                
-                X_curr = data[:, :-1, :].reshape(-1, n_assets)
-                X_next = data[:, 1:, :].reshape(-1, n_assets)
-                x0_t = torch.tensor(X_curr, dtype=torch.float32)
-                x1_t = torch.tensor(X_next, dtype=torch.float32)
-                
-                lsb = LightSBTrainer(
-                    dim=n_assets, 
-                    n_components=CONFIG["LIGHTSB_COMPONENTS"], 
-                    lr=CONFIG["LIGHTSB_LR"], 
-                    min_cov=CONFIG["LIGHTSB_MIN_COV"]
-                )
-                logger.info("   [LightSB] Training GMM...")
-                for i in range(CONFIG["LIGHTSB_STEPS"]):
-                    idx = np.random.choice(len(x0_t), min(1024, len(x0_t)))
-                    lsb.train_step(x0_t[idx], x1_t[idx])
-                    
-                drift_fn = lambda t, x, lsb=lsb: lsb.get_drift(t, x, clip_val=5.0)
-                
-                metrics_store[model_name]['train_time'] = time.time() - start_t
-                
-                logger.info(f"   [Gen] Simulating {n_test} paths...")
-                start_t = time.time()
-                gen_paths = euler_maruyama_generator(test_x0, time_grid, drift_fn, ref_proc, n_paths=n_test)
-                metrics_store[model_name]['gen_time'] = time.time() - start_t
-            
-            # ============================================
-            # TimeGAN (SOTA Baseline)
-            # ============================================
-            elif model_name == "TimeGAN":
-                logger.info("   [TimeGAN] Training GAN...")
-                timegan = TimeGAN(
-                    seq_len=steps,
-                    n_features=n_assets,
-                    hidden_dim=CONFIG["TIMEGAN_HIDDEN"],
-                    device=device
-                )
-                timegan.fit(data, epochs=CONFIG["TIMEGAN_EPOCHS"], batch_size=CONFIG["TIMEGAN_BATCH_SIZE"])
-                
-                metrics_store[model_name]['train_time'] = time.time() - start_t
-                
-                logger.info(f"   [Gen] Generating {n_test} samples...")
-                start_t = time.time()
-                gen_paths = timegan.generate(n_test)
-                metrics_store[model_name]['gen_time'] = time.time() - start_t
-            
-            # ============================================
-            # Diffusion-TS (SOTA Baseline)
-            # ============================================
-            elif model_name == "Diffusion-TS":
-                logger.info("   [Diffusion-TS] Training diffusion model...")
-                diffusion = DiffusionTS(
-                    seq_len=steps,
-                    n_features=n_assets,
-                    n_steps=CONFIG["DIFFUSION_STEPS"],
-                    device=device
-                )
-                diffusion.fit(data, epochs=CONFIG["DIFFUSION_EPOCHS"])
-                
-                metrics_store[model_name]['train_time'] = time.time() - start_t
-                
-                logger.info(f"   [Gen] Generating {n_test} samples...")
-                start_t = time.time()
-                gen_paths = diffusion.generate(n_test)
-                metrics_store[model_name]['gen_time'] = time.time() - start_t
-            
-            else:
-                logger.info(f"   [Skip] Unknown model: {model_name}")
-                continue
-            
-            # Store results
-            if gen_paths is not None:
-                results_store[model_name] = gen_paths
-                
-                # Basic metrics
-                if not np.isnan(gen_paths).any():
-                    wd = np.mean([wasserstein_distance_1d(real_paths_subset[:, -1, i], gen_paths[:, -1, i]) 
-                                  for i in range(min(5, n_assets))])
-                    
-                    acf_real = _calc_autocorr(real_paths_subset)
-                    acf_gen = _calc_autocorr(gen_paths)
-                    acf_mse = np.mean((acf_real - acf_gen)**2)
-                    
-                    metrics_store[model_name]['WD'] = wd
-                    metrics_store[model_name]['ACF_MSE'] = acf_mse
-                    logger.info(f"   [Metrics] WD: {wd:.4f}, ACF_MSE: {acf_mse:.6f}")
-                else:
-                    metrics_store[model_name]['WD'] = np.nan
-                    metrics_store[model_name]['ACF_MSE'] = np.nan
-                    logger.info("   [Warning] Generated paths contain NaN")
-                    
-        except Exception as e:
-            logger.info(f"   [Error] {model_name} failed: {str(e)}")
-            metrics_store[model_name]['train_time'] = np.nan
-            metrics_store[model_name]['gen_time'] = np.nan
-            metrics_store[model_name]['WD'] = np.nan
-            metrics_store[model_name]['ACF_MSE'] = np.nan
-
-    # =========================================================
-    # 4. Advanced Evaluation (Discriminative & Predictive)
-    # =========================================================
-    logger.info("\n" + "=" * 40)
-    logger.info("[Phase 4] Advanced Evaluation")
-    logger.info("=" * 40)
-    
-    if CONFIG["EVAL_DISCRIMINATIVE"] and len(results_store) > 0:
-        logger.info("\n[Eval] Computing Discriminative Scores...")
-        for model_name, gen_paths in results_store.items():
-            if np.isnan(gen_paths).any():
-                continue
-            try:
-                real_tensor = torch.tensor(real_paths_subset, dtype=torch.float32).to(device)
-                gen_tensor = torch.tensor(gen_paths, dtype=torch.float32).to(device)
-                
-                disc_score = discriminative_score_metrics(
-                    real_tensor, gen_tensor, 
-                    iterations=CONFIG["EVAL_ITERATIONS"],
-                    device=device
-                )
-                metrics_store[model_name]['Disc_Score'] = disc_score
-                logger.info(f"   [{model_name}] Discriminative Score: {disc_score:.4f}")
-            except Exception as e:
-                logger.info(f"   [{model_name}] Discriminative eval failed: {str(e)}")
-                metrics_store[model_name]['Disc_Score'] = np.nan
-    
-    if CONFIG["EVAL_PREDICTIVE"] and len(results_store) > 0:
-        logger.info("\n[Eval] Computing Predictive Scores...")
-        for model_name, gen_paths in results_store.items():
-            if np.isnan(gen_paths).any():
-                continue
-            try:
-                real_tensor = torch.tensor(real_paths_subset, dtype=torch.float32).to(device)
-                gen_tensor = torch.tensor(gen_paths, dtype=torch.float32).to(device)
-                
-                pred_score = predictive_score_metrics(
-                    real_tensor, gen_tensor,
-                    col_pred=n_assets - 1,
-                    iterations=CONFIG["EVAL_ITERATIONS"],
-                    device=device
-                )
-                metrics_store[model_name]['Pred_Score'] = pred_score
-                logger.info(f"   [{model_name}] Predictive Score: {pred_score:.4f}")
-            except Exception as e:
-                logger.info(f"   [{model_name}] Predictive eval failed: {str(e)}")
-                metrics_store[model_name]['Pred_Score'] = np.nan
-
-    # =========================================================
-    # 5. Visualization & Reporting
-    # =========================================================
-    logger.info("\n" + "=" * 40)
-    logger.info("[Phase 5] Visualization & Reporting")
-    logger.info("=" * 40)
-    
-    # A. Performance Summary Table
-    df_metrics = pd.DataFrame(metrics_store).T
-    logger.info("\n--- Performance Summary ---")
-    print(df_metrics.to_string())
-    df_metrics.to_csv(logger.get_save_path("metrics_summary.csv"))
-    
-    # B. Performance Bar Charts
-    plot_performance_metrics(df_metrics, save_path=logger.get_save_path("performance_metrics.png"))
-    
-    # C. SOTA Comparison Plot
-    if len(results_store) > 1:
-        plot_sota_comparison(
-            real_paths_subset,
-            results_store,
-            metrics_store,
-            save_path=logger.get_save_path("sota_comparison.png")
-        )
-    
-    # D. Price Reconstruction
-    S0 = 100.0
-    real_prices = reconstruct_prices(S0, real_paths_subset)
-    gen_prices_dict = {name: reconstruct_prices(S0, paths) for name, paths in results_store.items()}
-    
-    # E. Comprehensive Comparison
-    plot_comprehensive_comparison(
-        time_grid, 
-        real_paths_subset, 
-        results_store,
-        real_prices=real_prices,
-        gen_prices_dict=gen_prices_dict,
-        save_path=logger.get_save_path("final_comparison.png")
-    )
-    
-    # F. Correlation Distribution
-    if n_assets > 1 and len(results_store) > 0:
-        plot_correlation_distribution(
-            real_paths_subset,
-            results_store,
-            save_path=logger.get_save_path("correlation_dist.png")
-        )
-
-    # G. Volatility Surface
-    plot_volatility_surface(
-        vol_calibrator, 
-        data_range=data.flatten(),
-        T=dt * CONFIG["SEQ_LEN"],
-        save_path=logger.get_save_path("volatility_surface.png")
-    )
-    
-    logger.info(f"\n[Done] Full Benchmark Complete. Results in: {logger.run_dir}")
-    
-    return df_metrics
+    except ImportError as e:
+        print(f"\nNew architecture not available: {e}")
+        print("Falling back to legacy mode...")
+        run_legacy()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
