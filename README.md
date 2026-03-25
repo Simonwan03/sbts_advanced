@@ -22,6 +22,9 @@ This project was developed by **Lizhan HONG** (*École Polytechnique*) under the
 
 This repository implements a complete pipeline from jump detection in raw market data to the calibration of stochastic volatility models and the generation of synthetic trajectories via Entropic Optimal Transport.
 
+## Data Base
+Yahoo Finance: 2020~2023
+
 ### Key Mathematical Framework
 The core dynamics are modeled by a Jump-Diffusion Stochastic Differential Equation (SDE):
 
