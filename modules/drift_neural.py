@@ -367,8 +367,17 @@ class LSTMDriftEstimator(DriftEstimator):
             criterion = nn.MSELoss()
         
         # Learning rate scheduler
+        scheduler_kwargs = {
+            'mode': 'min',
+            'factor': 0.5,
+            'patience': 10,
+        }
+        # Some PyTorch versions expose a verbose flag while newer ones do not.
+        if 'verbose' in torch.optim.lr_scheduler.ReduceLROnPlateau.__init__.__code__.co_varnames:
+            scheduler_kwargs['verbose'] = verbose
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=10, verbose=verbose
+            optimizer,
+            **scheduler_kwargs
         )
         
         # Training loop

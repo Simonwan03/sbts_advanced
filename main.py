@@ -54,10 +54,13 @@ DEFAULT_CONFIG = {
     'end_date': '2024-01-01',
     'window_size': 60,
     'stride': 10,
+    'fallback_to_synthetic_on_data_error': False,
     
     # Synthetic data settings
     'synthetic_type': 'gbm_jump',
     'n_synthetic_samples': 500,
+    'synthetic_total_steps': 240,
+    'synthetic_return_type': 'log_returns',
     
     # Model settings
     'models_to_run': ['jd_sbts', 'jd_sbts_f'],
@@ -83,6 +86,8 @@ DEFAULT_CONFIG = {
     # Evaluation settings
     'run_discriminative': True,
     'run_predictive': True,
+    'discriminative_iterations': 500,
+    'predictive_iterations': 500,
     'acf_max_lag': 15,
     
     # Output settings
@@ -152,11 +157,9 @@ def import_new_modules():
 def import_visualization():
     """Import visualization modules."""
     try:
-        from utils.visualization import (
+        from visualization import (
             set_style, plot_performance_metrics, plot_comprehensive_comparison,
-            plot_correlation_distribution, plot_volatility_surface
-        )
-        from visualization.feedback_plots import (
+            plot_correlation_distribution, plot_volatility_surface,
             plot_stress_factor_dynamics, plot_feedback_comparison,
             plot_model_comparison_grid, create_legend_figure
         )
@@ -185,6 +188,17 @@ def _extract_metric_value(result: Any, key: str, default: float) -> float:
     return float(default)
 
 
+def _match_eval_shapes(
+    real_data: np.ndarray,
+    gen_data: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trim real and generated batches to a shared evaluation size."""
+    n_eval = min(len(real_data), len(gen_data))
+    if n_eval <= 0:
+        raise ValueError("Need at least one sample for evaluation")
+    return real_data[:n_eval], gen_data[:n_eval]
+
+
 # ============================================
 # Main Experiment Runner (New Architecture)
 # ============================================
@@ -211,9 +225,14 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     verbose = config.get('verbose', True)
     
     # Initialize experiment manager
-    model_name = config.get('model', 'jd_sbts')
+    models_to_run = config.get('models_to_run', ['jd_sbts'])
+    if len(models_to_run) == 1:
+        run_label = models_to_run[0]
+    else:
+        run_label = config.get('experiment_name', 'multi_model')
+
     exp_manager = modules['ExperimentManager'](
-        model_name=model_name,
+        model_name=run_label,
         base_dir=config.get('output_dir', 'experiments'),
         config=config,
         verbose=verbose
@@ -244,16 +263,28 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                 return_type='log_returns'
             )
         except Exception as e:
-            warnings.warn(f"Failed to load ETF data: {e}. Using synthetic data.")
-            data_source = 'synthetic'
+            if config.get('fallback_to_synthetic_on_data_error', False):
+                warnings.warn(f"Failed to load ETF data: {e}. Using synthetic data.")
+                data_source = 'synthetic'
+            else:
+                raise RuntimeError(
+                    "ETF data loading failed. "
+                    "Set 'fallback_to_synthetic_on_data_error': True if you want "
+                    "the experiment to continue on synthetic data."
+                ) from e
     
     if data_source == 'synthetic':
+        synthetic_total_steps = config.get(
+            'synthetic_total_steps',
+            max(config.get('window_size', 60) * 4, config.get('window_size', 60) + 1)
+        )
         raw_data, time_grid, metadata = modules['load_synthetic_data'](
             n_samples=config.get('n_synthetic_samples', 500),
-            n_steps=config.get('window_size', 60),
+            n_steps=synthetic_total_steps,
             n_features=len(config.get('tickers', ['SPY', 'QQQ', 'IWM', 'EEM', 'GLD'])),
             data_type=config.get('synthetic_type', 'gbm_jump'),
-            seed=config.get('seed', 42)
+            seed=config.get('seed', 42),
+            return_type=config.get('synthetic_return_type', 'log_returns'),
         )
     
     # Create sliding windows
@@ -280,8 +311,6 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     if verbose:
         print("\n[Phase 2] Training Models...")
     
-    models_to_run = config.get('models_to_run', ['jd_sbts', 'jd_sbts_f'])
-    
     trained_models = {}
     training_times = {}
     
@@ -298,9 +327,9 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             model = modules['get_model'](model_name, model_config)
             
             # Train
-            start_time = time.time()
+            start_time = time.perf_counter()
             model.fit(data, time_grid, verbose=verbose)
-            train_time = time.time() - start_time
+            train_time = time.perf_counter() - start_time
             
             trained_models[model_name] = model
             training_times[model_name] = train_time
@@ -334,7 +363,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             print(f"\n  Generating from {model_name}...")
         
         try:
-            start_time = time.time()
+            start_time = time.perf_counter()
             
             # Check if model supports stress factor output
             if hasattr(model, 'use_feedback') and model.use_feedback:
@@ -350,7 +379,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                     n_steps=n_steps
                 )
             
-            gen_time = time.time() - start_time
+            gen_time = time.perf_counter() - start_time
             
             generated_data[model_name] = gen_paths
             generation_times[model_name] = gen_time
@@ -380,10 +409,12 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             print(f"\n  Evaluating {model_name}...")
         
         try:
+            real_eval, gen_eval = _match_eval_shapes(data, gen_data)
+
             # Statistical metrics (Numba-accelerated)
             stats = modules['compute_all_metrics_numba'](
-                data[:n_generate],  # Use subset of real data
-                gen_data,
+                real_eval,
+                gen_eval,
                 max_acf_lag=config.get('acf_max_lag', 15)
             )
             
@@ -404,8 +435,9 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             if config.get('run_discriminative', True):
                 try:
                     disc_result = modules['discriminative_score_metrics'](
-                        data[:n_generate],
-                        gen_data
+                        real_eval,
+                        gen_eval,
+                        iterations=config.get('discriminative_iterations', 500),
                     )
                     metrics['discriminative_score'] = _extract_metric_value(
                         disc_result,
@@ -420,8 +452,9 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             if config.get('run_predictive', True):
                 try:
                     pred_result = modules['predictive_score_metrics'](
-                        data[:n_generate],
-                        gen_data
+                        real_eval,
+                        gen_eval,
+                        iterations=config.get('predictive_iterations', 500),
                     )
                     metrics['predictive_score'] = _extract_metric_value(
                         pred_result,
@@ -473,7 +506,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             
             # Model comparison grid
             viz['plot_model_comparison_grid'](
-                data[:n_generate],
+                data[:min(n_generate, len(data))],
                 generated_data,
                 metrics_results,
                 save_path=os.path.join(str(exp_manager.run_dir), 'model_comparison.png')
@@ -531,18 +564,13 @@ def run_benchmark(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Benchmark results
     """
-    # All models to benchmark
-    all_models = [
-        'jd_sbts',
-        'jd_sbts_f',
-        'lightsb',
-        'numba_sb',
-        'timegan',
-        'diffusion_ts',
-        'rnn',
-        'transformer_ar',
-    ]
-    
+    modules = import_new_modules()
+    if modules is None:
+        raise ImportError("Model modules not available in the unified architecture.")
+
+    # Keep benchmark coverage aligned with the active model registry.
+    all_models = list(modules['list_models']().keys())
+
     config['models_to_run'] = all_models
     config['experiment_name'] = f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     

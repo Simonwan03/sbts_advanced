@@ -80,6 +80,8 @@ def predictive_score_metrics(ori_data, generated_data, col_pred=None,
     
     # Basic parameters
     no, seq_len, dim = ori_data.shape
+    if no < 2 or generated_data.shape[0] < 2 or seq_len < 2:
+        raise ValueError("predictive_score_metrics requires at least 2 samples and seq_len >= 2")
     
     if col_pred is None:
         col_pred = dim - 1
@@ -104,7 +106,7 @@ def predictive_score_metrics(ori_data, generated_data, col_pred=None,
     # Build predictor
     hidden_dim = max(int(dim / 2), 4)
     num_layers = 2
-    batch_size = min(128, len(X_gen_flat) // 2)
+    batch_size = max(1, min(128, len(X_gen_flat) // 2))
     
     predictor = Predictor(dim, hidden_dim, num_layers).to(device)
     optimizer = optim.Adam(predictor.parameters(), lr=0.001)

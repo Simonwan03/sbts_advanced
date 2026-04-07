@@ -28,7 +28,8 @@ def load_etf_data(
     start_date: str = '2020-01-01',
     end_date: str = '2024-01-01',
     normalize: bool = True,
-    return_type: str = 'log_returns'
+    return_type: str = 'log_returns',
+    auto_adjust: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Load ETF price data from Yahoo Finance.
@@ -39,6 +40,8 @@ def load_etf_data(
         end_date: End date (YYYY-MM-DD)
         normalize: Whether to normalize prices to start at 100
         return_type: 'prices', 'returns', or 'log_returns'
+        auto_adjust: Forwarded to yfinance download. Keep False to preserve
+            the 'Adj Close' column across newer yfinance versions.
     
     Returns:
         Tuple of (data, time_grid, metadata)
@@ -57,11 +60,35 @@ def load_etf_data(
     
     # Download data
     data_dict = {}
+    price_column_used = {}
     for ticker in tickers:
         try:
-            df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+            df = yf.download(
+                ticker,
+                start=start_date,
+                end=end_date,
+                progress=False,
+                auto_adjust=auto_adjust,
+            )
             if len(df) > 0:
-                data_dict[ticker] = df['Adj Close'].values
+                if 'Adj Close' in df.columns:
+                    series = df['Adj Close']
+                    price_column_used[ticker] = 'Adj Close'
+                elif 'Close' in df.columns:
+                    warnings.warn(
+                        f"{ticker}: 'Adj Close' not found, falling back to 'Close'. "
+                        "If this is unexpected, check the installed yfinance version "
+                        "and auto_adjust setting."
+                    )
+                    series = df['Close']
+                    price_column_used[ticker] = 'Close'
+                else:
+                    warnings.warn(
+                        f"{ticker}: neither 'Adj Close' nor 'Close' columns are available"
+                    )
+                    continue
+
+                data_dict[ticker] = series
                 print(f"  {ticker}: {len(df)} data points")
             else:
                 warnings.warn(f"No data for {ticker}")
@@ -71,16 +98,20 @@ def load_etf_data(
     if len(data_dict) == 0:
         raise ValueError("No data loaded")
     
-    # Align lengths
-    min_len = min(len(v) for v in data_dict.values())
-    prices = np.column_stack([data_dict[t][:min_len] for t in data_dict.keys()])
+    # Align on the intersection of trading dates.
+    aligned = pd.concat(data_dict, axis=1, join='inner').dropna()
+    if aligned.empty:
+        raise ValueError("No overlapping dates across loaded tickers")
+
+    prices = aligned.to_numpy()
+    aligned_tickers = list(aligned.columns.get_level_values(0)) if hasattr(aligned.columns, "get_level_values") else list(aligned.columns)
     
     # Normalize to start at 100
     if normalize:
         prices = prices / prices[0] * 100
     
     # Create time grid
-    time_grid = np.linspace(0, 1, min_len)
+    time_grid = np.linspace(0, 1, len(prices))
     
     # Convert to returns if requested
     if return_type == 'returns':
@@ -96,12 +127,15 @@ def load_etf_data(
     data = data[np.newaxis, :, :]
     
     metadata = {
-        'tickers': list(data_dict.keys()),
-        'n_features': len(data_dict),
+        'tickers': aligned_tickers,
+        'n_features': len(aligned_tickers),
         'n_steps': data.shape[1],
         'start_date': start_date,
         'end_date': end_date,
         'return_type': return_type,
+        'auto_adjust': auto_adjust,
+        'price_column_used': price_column_used,
+        'aligned_dates': [str(idx) for idx in aligned.index],
         'prices': prices if return_type != 'prices' else None
     }
     
@@ -115,7 +149,8 @@ def load_synthetic_data(
     n_steps: int = 60,
     n_features: int = 5,
     data_type: str = 'gbm_jump',
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    return_type: str = 'prices'
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Generate synthetic time series data for testing.
@@ -130,6 +165,7 @@ def load_synthetic_data(
             - 'heston': Heston stochastic volatility
             - 'ou': Ornstein-Uhlenbeck process
         seed: Random seed for reproducibility
+        return_type: 'prices', 'returns', or 'log_returns'
     
     Returns:
         Tuple of (data, time_grid, metadata)
@@ -141,22 +177,35 @@ def load_synthetic_data(
     dt = time_grid[1] - time_grid[0]
     
     if data_type == 'gbm':
-        data = _generate_gbm(n_samples, n_steps, n_features, dt)
+        prices = _generate_gbm(n_samples, n_steps, n_features, dt)
     elif data_type == 'gbm_jump':
-        data = _generate_gbm_jump(n_samples, n_steps, n_features, dt)
+        prices = _generate_gbm_jump(n_samples, n_steps, n_features, dt)
     elif data_type == 'heston':
-        data = _generate_heston(n_samples, n_steps, n_features, dt)
+        prices = _generate_heston(n_samples, n_steps, n_features, dt)
     elif data_type == 'ou':
-        data = _generate_ou(n_samples, n_steps, n_features, dt)
+        prices = _generate_ou(n_samples, n_steps, n_features, dt)
     else:
         raise ValueError(f"Unknown data type: {data_type}")
-    
+
+    if return_type == 'returns':
+        data = np.diff(prices, axis=1) / (prices[:, :-1, :] + 1e-8)
+        time_grid = time_grid[1:]
+    elif return_type == 'log_returns':
+        data = np.diff(np.log(np.maximum(prices, 1e-8)), axis=1)
+        time_grid = time_grid[1:]
+    elif return_type == 'prices':
+        data = prices
+    else:
+        raise ValueError(f"Unknown synthetic return_type: {return_type}")
+
     metadata = {
         'data_type': data_type,
         'n_samples': n_samples,
         'n_steps': n_steps,
         'n_features': n_features,
-        'seed': seed
+        'seed': seed,
+        'return_type': return_type,
+        'prices': prices if return_type != 'prices' else None,
     }
     
     return data, time_grid, metadata

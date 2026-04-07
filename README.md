@@ -58,9 +58,12 @@ sbts_advanced/
 │   ├── factory.py          # Model registry / instantiation
 │   └── base.py            # Shared model API
 ├── baselines/              # Legacy compatibility wrappers
-├── utils/                  # Utilities for analysis
+├── visualization/          # Active visualization package
+│   ├── general.py          # General experiment and benchmark plots
+│   └── feedback_plots.py   # JD-SBTS-F / stress-factor specific plots
+├── utils/                  # Utilities for analysis and compatibility wrappers
 │   ├── metrics.py          # Evaluation metrics (Wasserstein Distance, MSE, discriminative score)
-│   └── visualization.py    # Plotting routines for trajectories and distributions
+│   └── visualization.py    # Backward-compatible wrapper to visualization/
 └── main.py                 # Main entry point for the training/generation pipeline
 ```
 
@@ -111,6 +114,15 @@ python main.py --model rnn
 python main.py --model transformer_ar
 python main.py --list-models
 ```
+
+When using synthetic data, the active pipeline now treats `window_size` and the
+synthetic trajectory length as separate controls:
+- `window_size`: length of each training window
+- `synthetic_total_steps`: length of the raw synthetic path before sliding-window extraction
+- `synthetic_return_type`: use `log_returns` to keep synthetic and ETF experiments on a comparable scale
+
+This avoids the previous failure mode where `n_steps == window_size` produced
+too few training windows for neural baselines.
 
 All active models follow the same high-level API:
 

@@ -134,7 +134,7 @@ class JDSBTS(TimeSeriesGenerator):
         Returns:
             self for method chaining
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         # Ensure 3D
         if data.ndim == 2:
@@ -158,7 +158,7 @@ class JDSBTS(TimeSeriesGenerator):
         if verbose:
             print("\n[Step 1/4] Jump Detection...")
         
-        jump_start = time.time()
+        jump_start = time.perf_counter()
         
         self.jump_detector = get_jump_detector(self.config)
         self.jump_detector.fit(data)
@@ -166,7 +166,7 @@ class JDSBTS(TimeSeriesGenerator):
         jump_mask = self.jump_detector.detect(data)
         n_jumps = np.sum(jump_mask)
         
-        self.training_metrics.jump_detection_time = time.time() - jump_start
+        self.training_metrics.jump_detection_time = time.perf_counter() - jump_start
         self.training_metrics.n_jumps_detected = n_jumps
         self.training_metrics.jump_intensity = self.jump_detector.jump_intensity
         
@@ -193,14 +193,14 @@ class JDSBTS(TimeSeriesGenerator):
         if verbose:
             print("\n[Step 3/4] Volatility Calibration on Purified Data...")
         
-        vol_start = time.time()
+        vol_start = time.perf_counter()
         
         self.volatility_calibrator = LocalVolatilityCalibrator(self.config)
         self.volatility_calibrator.fit(purified_data, time_grid, purified=True)
         
         vol_shape = self.volatility_calibrator.check_smile_shape()
         
-        self.training_metrics.volatility_calibration_time = time.time() - vol_start
+        self.training_metrics.volatility_calibration_time = time.perf_counter() - vol_start
         self.training_metrics.vol_surface_shape = vol_shape
         
         if verbose:
@@ -214,7 +214,7 @@ class JDSBTS(TimeSeriesGenerator):
         if verbose:
             print(f"\n[Step 4/4] Drift Estimation ({self.drift_type}) on Purified Data...")
         
-        drift_start = time.time()
+        drift_start = time.perf_counter()
         
         if self.use_neural_drift:
             self.drift_estimator = get_neural_drift_estimator(self.config)
@@ -223,7 +223,7 @@ class JDSBTS(TimeSeriesGenerator):
         
         self.drift_estimator.fit(purified_data, time_grid, verbose=verbose)
         
-        self.training_metrics.drift_estimation_time = time.time() - drift_start
+        self.training_metrics.drift_estimation_time = time.perf_counter() - drift_start
         
         if hasattr(self.drift_estimator, 'get_training_history'):
             self.training_metrics.drift_loss_history = self.drift_estimator.get_training_history()
@@ -236,7 +236,7 @@ class JDSBTS(TimeSeriesGenerator):
         if self.use_feedback:
             self.stress_factor = StressFactor.from_config(self.config)
         
-        self.training_metrics.total_time = time.time() - start_time
+        self.training_metrics.total_time = time.perf_counter() - start_time
         self.is_fitted = True
         
         if verbose:
@@ -245,6 +245,75 @@ class JDSBTS(TimeSeriesGenerator):
             print("=" * 60)
         
         return self
+
+    def _build_neural_jump_history(
+        self,
+        paths: np.ndarray,
+        step_idx: int,
+    ) -> np.ndarray:
+        """Build a fixed-length history tensor for neural jump sampling."""
+        history_len = getattr(self.jump_detector, 'seq_len', 10)
+        n_samples, _, n_features = paths.shape
+
+        if step_idx <= 1:
+            return np.zeros((n_samples, history_len, n_features), dtype=np.float64)
+
+        returns = np.diff(paths[:, :step_idx, :], axis=1)
+        history = np.zeros((n_samples, history_len, n_features), dtype=np.float64)
+        take = min(history_len, returns.shape[1])
+        history[:, -take:, :] = returns[:, -take:, :]
+        return history
+
+    def _generate_with_neural_jumps(
+        self,
+        x0: np.ndarray,
+        time_grid: np.ndarray,
+        return_stress: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Generate paths with history-dependent neural jump intensities."""
+        n_samples, n_features = x0.shape
+        n_steps = len(time_grid)
+
+        paths = np.zeros((n_samples, n_steps, n_features), dtype=np.float64)
+        paths[:, 0, :] = x0
+
+        stress = None
+        if self.use_feedback:
+            stress = np.zeros((n_samples, n_steps), dtype=np.float64)
+
+        dW = np.random.randn(n_samples, n_steps - 1, n_features)
+
+        for t in range(1, n_steps):
+            dt = float(time_grid[t] - time_grid[t - 1])
+            sqrt_dt = np.sqrt(dt)
+            x_prev = paths[:, t - 1, :]
+            t_prev = time_grid[t - 1]
+
+            drift = self.drift_estimator.predict(t_prev, x_prev)
+            vol = self.volatility_calibrator(t_prev, x_prev)
+
+            history = self._build_neural_jump_history(paths, t)
+            jump_mask, jump_sizes = self.jump_detector.sample_jumps_neural(history, dt)
+            jump_sizes = jump_sizes[:, np.newaxis].repeat(n_features, axis=1)
+
+            if self.use_feedback:
+                total_jump = np.abs(jump_sizes).sum(axis=1)
+                stress[:, t] = (
+                    stress[:, t - 1] * np.exp(-self.stress_factor.kappa * dt)
+                    + self.stress_factor.gamma * total_jump
+                )
+                vol = vol * np.sqrt(1.0 + stress[:, t])[:, np.newaxis]
+
+            paths[:, t, :] = (
+                x_prev
+                + drift * dt
+                + vol * sqrt_dt * dW[:, t - 1, :]
+                + jump_sizes
+            )
+
+        if return_stress and self.use_feedback:
+            return paths, stress
+        return paths
     
     def generate(
         self,
@@ -298,7 +367,14 @@ class JDSBTS(TimeSeriesGenerator):
         # Define jump sampler
         def jump_sampler(n, steps, dt):
             return self.jump_detector.sample_jumps(n, steps, dt)
-        
+
+        if self.use_neural_jumps and hasattr(self.jump_detector, 'sample_jumps_neural'):
+            return self._generate_with_neural_jumps(
+                x0=x0,
+                time_grid=time_grid,
+                return_stress=return_stress
+            )
+
         # Solve SDE
         result = self.solver.solve(
             x0=x0,

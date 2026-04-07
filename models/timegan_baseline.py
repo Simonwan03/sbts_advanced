@@ -127,6 +127,8 @@ class TimeGAN(TimeSeriesGenerator):
         self.hidden_dim = config.get("timegan_hidden_dim", 64)
         self.z_dim = config.get("timegan_z_dim", 32)
         self.n_layers = config.get("timegan_n_layers", 2)
+        if self.n_layers < 2:
+            raise ValueError("timegan_n_layers must be >= 2")
         self.epochs = config.get("timegan_epochs", 50)
         self.lr = config.get("timegan_lr", 0.001)
         self.batch_size = config.get("timegan_batch_size", 128)

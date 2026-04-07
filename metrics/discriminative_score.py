@@ -127,10 +127,13 @@ def discriminative_score_metrics(ori_data, generated_data, iterations=2000,
     
     # Basic parameters
     no, seq_len, dim = ori_data.shape
+    no_hat = generated_data.shape[0]
+    if no < 2 or no_hat < 2 or seq_len < 2:
+        raise ValueError("discriminative_score_metrics requires at least 2 samples and seq_len >= 2")
     
     # Build discriminator
     hidden_dim = max(int(dim / 2), 4)
-    batch_size = min(128, no // 2)
+    batch_size = max(1, min(128, no // 2))
     num_layers = 2
     
     discriminator = Discriminator(dim, hidden_dim, num_layers)

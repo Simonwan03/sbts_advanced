@@ -1,15 +1,7 @@
-"""
-SOTA Baselines for Time Series Generation
+"""Backward-compatible baseline imports."""
 
-This module provides implementations of state-of-the-art
-time series generation methods for benchmarking.
+from baselines.timegan import TimeGAN
+from baselines.diffusion_ts import DiffusionTS
 
-Available Methods:
-- TimeGAN: Time-series Generative Adversarial Network (Yoon et al., 2019)
-- DiffusionTS: Diffusion-based Time Series Generation
-"""
+__all__ = ["TimeGAN", "DiffusionTS"]
 
-from .timegan import TimeGAN
-from .diffusion_ts import DiffusionTS
-
-__all__ = ['TimeGAN', 'DiffusionTS']
