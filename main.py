@@ -16,8 +16,9 @@ Usage:
     python main.py                          # Run with default config
     python main.py --config config.json     # Run with custom config
     python main.py --model jd_sbts_f        # Run specific model
+    python main.py --model rnn              # Run RNN baseline
+    python main.py --model transformer_ar   # Run causal Transformer baseline
     python main.py --benchmark              # Run full benchmark
-    python main.py --legacy                 # Run legacy main_old.py
 
 Author: Manus AI
 """
@@ -90,6 +91,30 @@ DEFAULT_CONFIG = {
     'save_plots': True,
 }
 
+CLI_MODEL_CHOICES = [
+    'jd_sbts',
+    'jd_sbts_f',
+    'jd_sbts_neural',
+    'jd_sbts_f_neural',
+    'lightsb',
+    'numba_sb',
+    'timegan',
+    'diffusion_ts',
+    'rnn',
+    'transformer_ar',
+    'sbts',
+    'sbts_f',
+    'sbts_neural',
+    'sbts_f_neural',
+    'light_sb',
+    'numbasb',
+    'time_gan',
+    'diffusion',
+    'rnn_baseline',
+    'transformer',
+    'ar_transformer',
+]
+
 
 # ============================================
 # Import Handlers (with fallbacks)
@@ -151,6 +176,15 @@ def import_visualization():
         return None
 
 
+def _extract_metric_value(result: Any, key: str, default: float) -> float:
+    """Normalize metric outputs that may be dicts or scalar values."""
+    if isinstance(result, dict):
+        return float(result.get(key, default))
+    if np.isscalar(result):
+        return float(result)
+    return float(default)
+
+
 # ============================================
 # Main Experiment Runner (New Architecture)
 # ============================================
@@ -169,7 +203,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     viz = import_visualization()
     
     if modules is None:
-        raise ImportError("New modules not available. Use --legacy flag.")
+        raise ImportError("Model modules not available in the unified architecture.")
     
     # Set random seed
     np.random.seed(config.get('seed', 42))
@@ -373,7 +407,11 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                         data[:n_generate],
                         gen_data
                     )
-                    metrics['discriminative_score'] = disc_result.get('discriminative_score', 0.5)
+                    metrics['discriminative_score'] = _extract_metric_value(
+                        disc_result,
+                        'discriminative_score',
+                        0.5
+                    )
                 except Exception as e:
                     warnings.warn(f"Discriminative score failed: {e}")
                     metrics['discriminative_score'] = 0.5
@@ -385,7 +423,11 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                         data[:n_generate],
                         gen_data
                     )
-                    metrics['predictive_score'] = pred_result.get('predictive_score', 0)
+                    metrics['predictive_score'] = _extract_metric_value(
+                        pred_result,
+                        'predictive_score',
+                        0.0
+                    )
                 except Exception as e:
                     warnings.warn(f"Predictive score failed: {e}")
                     metrics['predictive_score'] = 0
@@ -496,36 +538,15 @@ def run_benchmark(config: Dict[str, Any]) -> Dict[str, Any]:
         'lightsb',
         'numba_sb',
         'timegan',
-        'diffusion_ts'
+        'diffusion_ts',
+        'rnn',
+        'transformer_ar',
     ]
     
     config['models_to_run'] = all_models
     config['experiment_name'] = f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     return run_experiment_new(config)
-
-
-# ============================================
-# Legacy Runner
-# ============================================
-
-def run_legacy():
-    """Run the legacy main_old.py."""
-    import importlib.util
-    
-    legacy_path = os.path.join(os.path.dirname(__file__), 'main_old.py')
-    
-    if not os.path.exists(legacy_path):
-        raise FileNotFoundError("Legacy main_old.py not found")
-    
-    spec = importlib.util.spec_from_file_location("main_old", legacy_path)
-    legacy_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(legacy_module)
-    
-    if hasattr(legacy_module, 'main'):
-        legacy_module.main()
-    else:
-        raise AttributeError("Legacy module has no main() function")
 
 
 # ============================================
@@ -549,19 +570,14 @@ def parse_args():
         '--model', '-m',
         type=str,
         default=None,
-        help='Specific model to run (e.g., jd_sbts_f)'
+        choices=CLI_MODEL_CHOICES,
+        help='Specific model to run (e.g., jd_sbts_f, rnn, transformer_ar)'
     )
     
     parser.add_argument(
         '--benchmark', '-b',
         action='store_true',
         help='Run full benchmark with all models'
-    )
-    
-    parser.add_argument(
-        '--legacy',
-        action='store_true',
-        help='Run legacy main_old.py instead of new architecture'
     )
     
     parser.add_argument(
@@ -602,13 +618,7 @@ def parse_args():
 def main():
     """Main entry point."""
     args = parse_args()
-    
-    # Run legacy if requested
-    if args.legacy:
-        print("Running legacy main_old.py...")
-        run_legacy()
-        return
-    
+
     # List models and exit
     if args.list_models:
         modules = import_new_modules()
@@ -619,7 +629,7 @@ def main():
                 print(f"  {name}: {desc}")
             print()
         else:
-            print("New modules not available. Use --legacy flag.")
+            print("Model modules not available in the unified architecture.")
         return
     
     # Load configuration
@@ -657,8 +667,7 @@ def main():
     
     except ImportError as e:
         print(f"\nNew architecture not available: {e}")
-        print("Falling back to legacy mode...")
-        run_legacy()
+        print("Install the missing dependencies and rerun the unified main pipeline.")
 
 
 if __name__ == '__main__':

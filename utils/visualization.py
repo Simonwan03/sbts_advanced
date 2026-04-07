@@ -19,7 +19,12 @@ def set_style():
         'SBTS-LSTM': {'color': '#E64B35', 'ls': '--', 'marker': '^', 'label': 'LSTM'},   
         'LSTM':      {'color': '#E64B35', 'ls': '--', 'marker': '^', 'label': 'LSTM'},   
         'LIGHTSB': {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'}, 
-        'LightSB': {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'}, 
+        'LightSB': {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'},
+        'lightsb': {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'},
+        'timegan': {'color': '#3C5488', 'ls': '-',  'marker': 'D', 'label': 'TimeGAN'},
+        'diffusion_ts': {'color': '#9467BD', 'ls': '-', 'marker': 'P', 'label': 'Diffusion-TS'},
+        'rnn': {'color': '#D55E00', 'ls': '--', 'marker': 's', 'label': 'RNN'},
+        'transformer_ar': {'color': '#009E73', 'ls': '-.', 'marker': '^', 'label': 'Transformer-AR'},
     }
     
     plt.rcParams.update({
@@ -519,6 +524,8 @@ EXTENDED_STYLE_MAP = {
     'LightSB':        {'color': '#00A087', 'ls': ':',  'marker': 'x', 'label': 'LightSB'},
     'TimeGAN':        {'color': '#3C5488', 'ls': '-',  'marker': 'D', 'label': 'TimeGAN'},
     'Diffusion-TS':   {'color': '#9467BD', 'ls': '-',  'marker': 'P', 'label': 'Diffusion-TS'},
+    'rnn':            {'color': '#D55E00', 'ls': '--', 'marker': 's', 'label': 'RNN'},
+    'transformer_ar': {'color': '#009E73', 'ls': '-.', 'marker': '^', 'label': 'Transformer-AR'},
     'Kernel':         {'color': '#8C564B', 'ls': '--', 'marker': 'o', 'label': 'Kernel'},
     'SBTS-LSTM':      {'color': '#E64B35', 'ls': '--', 'marker': '^', 'label': 'LSTM'},
 }

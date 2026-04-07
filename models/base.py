@@ -14,19 +14,18 @@ import numpy as np
 class GenerativeModel(ABC):
     """
     Abstract base class for all generative time series models.
-    
-    All models must implement:
-        - fit(data): Train the model on data
-        - generate(n_samples, time_grid): Generate synthetic samples
-    
-    Naming Convention:
-        - kernel_sbts: Kernel-based Schrödinger Bridge
-        - jd_static_lstm_sbts: Jump-Diffusion with Static jumps, LSTM drift
-        - jd_neural_lstm_sbts: Jump-Diffusion with Neural jumps, LSTM drift
-        - jd_static_lstm_sbts_f: JD-SBTS with Feedback mechanism
-        - lightsb_sbts: Light Schrödinger Bridge (GMM-based)
-        - baseline_timegan: TimeGAN baseline
-        - baseline_diffusion_ts: Diffusion-TS baseline
+
+    Active models in this repository should follow one simple interface:
+        - fit(data, time_grid=None, verbose=True)
+        - generate(n_samples, n_steps=None, x0=None, **kwargs)
+
+    The input data convention is:
+        - training windows shaped (n_samples, seq_len, n_features)
+        - univariate data may also be provided as (n_samples, seq_len)
+
+    The generation convention is:
+        - return arrays shaped (n_samples, seq_len, n_features)
+        - optional kwargs may be used by model-specific variants
     """
     
     # Model name following naming convention
@@ -44,13 +43,20 @@ class GenerativeModel(ABC):
         self._training_metrics = {}
     
     @abstractmethod
-    def fit(self, data: np.ndarray) -> 'GenerativeModel':
+    def fit(
+        self,
+        data: np.ndarray,
+        time_grid: Optional[np.ndarray] = None,
+        verbose: bool = True
+    ) -> 'GenerativeModel':
         """
         Fit the model to training data.
         
         Args:
             data: Training data of shape (n_samples, seq_len, n_features)
                   or (n_samples, seq_len) for univariate
+            time_grid: Optional time grid for models that use it
+            verbose: Whether to print training progress
         
         Returns:
             self for method chaining
@@ -61,7 +67,8 @@ class GenerativeModel(ABC):
     def generate(
         self,
         n_samples: int,
-        time_grid: Optional[np.ndarray] = None,
+        n_steps: Optional[int] = None,
+        x0: Optional[np.ndarray] = None,
         **kwargs
     ) -> np.ndarray:
         """
@@ -69,13 +76,24 @@ class GenerativeModel(ABC):
         
         Args:
             n_samples: Number of samples to generate
-            time_grid: Optional time grid, defaults to training grid
+            n_steps: Optional output length, defaults to training length
+            x0: Optional seed / initial condition / prefix, depending on the model
             **kwargs: Additional generation parameters
         
         Returns:
             Generated samples of shape (n_samples, seq_len, n_features)
         """
         pass
+
+    def sample(
+        self,
+        n_samples: int,
+        n_steps: Optional[int] = None,
+        x0: Optional[np.ndarray] = None,
+        **kwargs
+    ) -> np.ndarray:
+        """Alias for generate() to support baseline-style sampling code."""
+        return self.generate(n_samples=n_samples, n_steps=n_steps, x0=x0, **kwargs)
     
     def get_training_metrics(self) -> Dict[str, Any]:
         """Return metrics collected during training."""

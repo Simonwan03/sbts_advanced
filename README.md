@@ -22,6 +22,14 @@ This project was developed by **Lizhan HONG** (*École Polytechnique*) under the
 
 This repository implements a complete pipeline from jump detection in raw market data to the calibration of stochastic volatility models and the generation of synthetic trajectories via Entropic Optimal Transport.
 
+The benchmark suite also includes two compact neural baselines for comparison:
+- **`rnn`**: a lightweight GRU/LSTM autoregressive predictor trained with next-step MSE.
+- **`transformer_ar`**: a causal decoder-only Transformer that generates a continuation from a seed prefix window.
+
+The repository now uses a single active experiment entrypoint:
+- **`main.py`** is the only maintained training / generation pipeline.
+- **`main_old.py`** is retained only as a thin compatibility shim.
+
 ## Data Base
 Yahoo Finance: 2020~2023
 
@@ -40,15 +48,16 @@ The codebase is organized into modular components for scalability and research e
 
 ```plaintext
 sbts_advanced/
-├── core/                   # Core algorithms and SDE solvers
-│   ├── bandwidth.py        # Adaptive CV Bandwidth selection for density estimation
-│   ├── drift_estimators.py # Drift Estimation algorithms (e.g., Kernel, LSTM)
-│   ├── lightsb.py          # LightSB implementation (GMM Parameterization)
-│   ├── reference.py        # Reference measures (Levy Processes, Stoch Vol)
-│   └── solver.py           # Euler-Maruyama solver with Jump-Diffusion support
-├── models/                 # Financial modeling and Calibration
-│   ├── jumps.py            # Jump Detection algorithms (e.g., Ait-Sahalia, Lee-Mykland)
-│   └── calibration.py      # Volatility Surface & Model Calibration
+├── models/                 # Active model implementations with one interface
+│   ├── sbts_variants.py    # JD-SBTS family
+│   ├── lightsb.py          # LightSB and Numba-SB
+│   ├── timegan_baseline.py # TimeGAN baseline
+│   ├── diffusion_ts_baseline.py # Diffusion-TS baseline
+│   ├── rnn_baseline.py     # Autoregressive recurrent baseline (GRU/LSTM)
+│   ├── transformer_ar_baseline.py # Causal autoregressive Transformer baseline
+│   ├── factory.py          # Model registry / instantiation
+│   └── base.py            # Shared model API
+├── baselines/              # Legacy compatibility wrappers
 ├── utils/                  # Utilities for analysis
 │   ├── metrics.py          # Evaluation metrics (Wasserstein Distance, MSE, discriminative score)
 │   └── visualization.py    # Plotting routines for trajectories and distributions
@@ -98,3 +107,14 @@ Execute the full pipeline (Data Calibration $\rightarrow$ Jump Detection $\right
 
 ```bash
 python main.py
+python main.py --model rnn
+python main.py --model transformer_ar
+python main.py --list-models
+```
+
+All active models follow the same high-level API:
+
+```python
+model.fit(data, time_grid=None, verbose=True)
+samples = model.generate(n_samples, n_steps=None, x0=None)
+```

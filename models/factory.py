@@ -16,7 +16,10 @@ from models.sbts_variants import (
     get_sbts_model
 )
 from models.lightsb import LightSB, NumbaSB
-from models.baselines import TimeGAN, DiffusionTS
+from models.timegan_baseline import TimeGAN
+from models.diffusion_ts_baseline import DiffusionTS
+from models.rnn_baseline import RNNBaseline
+from models.transformer_ar_baseline import TransformerARBaseline
 
 
 # ============================================
@@ -37,6 +40,8 @@ MODEL_REGISTRY: Dict[str, Type[TimeSeriesGenerator]] = {
     # Baselines
     'timegan': TimeGAN,
     'diffusion_ts': DiffusionTS,
+    'rnn': RNNBaseline,
+    'transformer_ar': TransformerARBaseline,
 }
 
 # Aliases for convenience
@@ -49,6 +54,9 @@ MODEL_ALIASES = {
     'numbasb': 'numba_sb',
     'time_gan': 'timegan',
     'diffusion': 'diffusion_ts',
+    'rnn_baseline': 'rnn',
+    'transformer': 'transformer_ar',
+    'ar_transformer': 'transformer_ar',
 }
 
 
@@ -73,6 +81,8 @@ def get_model(
             - 'numba_sb': Numba-accelerated Markovian SB
             - 'timegan': TimeGAN baseline
             - 'diffusion_ts': Diffusion-TS baseline
+            - 'rnn': Autoregressive RNN baseline
+            - 'transformer_ar': Causal autoregressive Transformer baseline
         config: Configuration dictionary (optional)
     
     Returns:
@@ -123,6 +133,8 @@ def list_models() -> Dict[str, str]:
         'numba_sb': 'Numba-accelerated Markovian SB (fast baseline)',
         'timegan': 'TimeGAN (Yoon et al., NeurIPS 2019)',
         'diffusion_ts': 'Diffusion model for time series',
+        'rnn': 'Autoregressive RNN baseline (GRU/LSTM)',
+        'transformer_ar': 'Causal autoregressive Transformer baseline',
     }
     return descriptions
 
@@ -214,6 +226,33 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
             'diffusion_batch_size': 64,
             'diffusion_beta_start': 0.0001,
             'diffusion_beta_end': 0.02,
+        })
+
+    elif model_type == 'rnn':
+        base_config.update({
+            'rnn_hidden_dim': 64,
+            'rnn_num_layers': 2,
+            'rnn_dropout': 0.1,
+            'rnn_bidirectional': False,
+            'rnn_type': 'lstm',
+            'rnn_epochs': 50,
+            'rnn_lr': 0.001,
+            'rnn_batch_size': 128,
+            'rnn_context_len': None,
+        })
+
+    elif model_type == 'transformer_ar':
+        base_config.update({
+            'transformer_ar_d_model': 64,
+            'transformer_ar_n_heads': 4,
+            'transformer_ar_n_layers': 2,
+            'transformer_ar_d_ff': 128,
+            'transformer_ar_dropout': 0.1,
+            'transformer_ar_epochs': 50,
+            'transformer_ar_lr': 0.001,
+            'transformer_ar_batch_size': 128,
+            'transformer_ar_max_seq_len': 64,
+            'transformer_ar_context_len': None,
         })
     
     return base_config
@@ -322,3 +361,15 @@ def create_timegan(config: Optional[Dict[str, Any]] = None) -> TimeGAN:
 def create_diffusion_ts(config: Optional[Dict[str, Any]] = None) -> DiffusionTS:
     """Create Diffusion-TS model."""
     return get_model('diffusion_ts', config)
+
+
+def create_rnn(config: Optional[Dict[str, Any]] = None) -> RNNBaseline:
+    """Create the autoregressive RNN baseline."""
+    return get_model('rnn', config)
+
+
+def create_transformer_ar(
+    config: Optional[Dict[str, Any]] = None
+) -> TransformerARBaseline:
+    """Create the causal autoregressive Transformer baseline."""
+    return get_model('transformer_ar', config)

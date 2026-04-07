@@ -23,6 +23,8 @@ STYLE_CONFIG = {
     'Numba-SB': {'color': '#8491B4', 'linestyle': '--', 'marker': '<', 'hatch': '++'},
     'TimeGAN': {'color': '#91D1C2', 'linestyle': '-.', 'marker': '>', 'hatch': '--'},
     'Diffusion-TS': {'color': '#DC9FB4', 'linestyle': ':', 'marker': 'p', 'hatch': '||'},
+    'rnn': {'color': '#D55E00', 'linestyle': '--', 'marker': 's', 'hatch': 'oo'},
+    'transformer_ar': {'color': '#009E73', 'linestyle': '-.', 'marker': '^', 'hatch': '**'},
     'Real': {'color': 'black', 'linestyle': '-', 'marker': 'o', 'hatch': ''},
 }
 
