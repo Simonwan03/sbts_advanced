@@ -1,0 +1,55 @@
+{
+  "dataset": "google",
+  "source": "yfinance",
+  "output_shape_documentation": "processed_windows shape is (num_windows, 24, 6) by default",
+  "raw_csv_path": "/home/wan/psc/sbts_advanced/notebook_outputs/benchmark_main_pipeline/datasets/google/GOOGL_raw_daily.csv",
+  "raw_windows_shape": [
+    3846,
+    24,
+    6
+  ],
+  "processed_windows_shape": [
+    3846,
+    24,
+    6
+  ],
+  "download_report": {
+    "ticker": "GOOGL",
+    "requested_start_date": "2004-01-01",
+    "requested_end_date": "2019-12-31",
+    "actual_start_date": "2004-08-19",
+    "actual_end_date": "2019-12-31",
+    "valid_rows": 3869,
+    "dropped_rows_missing_or_infinite": 0,
+    "features": [
+      "High",
+      "Low",
+      "Open",
+      "Close",
+      "Adj Close",
+      "Volume"
+    ]
+  },
+  "normalization_report": {
+    "method": "base_one",
+    "zero_first_value_count": 0
+  },
+  "config": {
+    "ticker": "GOOGL",
+    "start_date": "2004-01-01",
+    "end_date": "2019-12-31",
+    "features": [
+      "High",
+      "Low",
+      "Open",
+      "Close",
+      "Adj Close",
+      "Volume"
+    ],
+    "window_length": 24,
+    "normalization": "base_one",
+    "train_frac": 0.7,
+    "val_frac": 0.15,
+    "shuffle": true
+  }
+}

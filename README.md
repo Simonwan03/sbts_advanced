@@ -1,4 +1,4 @@
-# SBTS Advanced: Levy Processes & Schrödinger Bridge for Time Series Generation
+# SBTS Advanced: Lévy Processes & Schrödinger Bridge for Time Series Generation
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -7,122 +7,174 @@
 > **Projet Scientifique Collectif (PSC)**  
 > **Institution:** École Polytechnique (IP Paris)  
 > **Academic Year:** 2025-2026
+
 ---
 
-## 👥 Authors & Supervision
+## Authors & Supervision
 
 This project was developed by **Lizhan HONG** (*École Polytechnique*) under the supervision and guidance of **Prof. Huyên PHAM**.
 
-> **Context:** Performed within the framework of the *Projet Scientifique Collectif (PSC)*, 2024-2025.
 ---
 
-## 📖 Overview
+## Overview
 
-**SBTS Advanced** is a research-oriented implementation focusing on generative modeling for financial time series using **Schrödinger Bridge (SB)** frameworks. Unlike standard diffusion models that rely on Brownian motion, this project extends the methodology to **Levy Processes** and **Jump-Diffusion SDEs**, allowing for the generation of realistic financial data with heavy tails and discontinuous jumps.
+**SBTS Advanced** is a research-oriented implementation of generative modeling for financial time series using **Schrödinger Bridge (SB)** methods, **Lévy processes**, and **jump-diffusion SDEs**. The project focuses on generating realistic time series with heavy tails, discontinuous jumps, volatility clustering, and market-like stylized facts.
 
-This repository implements a complete pipeline from jump detection in raw market data to the calibration of stochastic volatility models and the generation of synthetic trajectories via Entropic Optimal Transport.
+The active codebase now uses one unified model interface and one active experiment entry point:
 
-The benchmark suite also includes two compact neural baselines for comparison:
-- **`rnn`**: a lightweight GRU/LSTM autoregressive predictor trained with next-step MSE.
-- **`transformer_ar`**: a causal decoder-only Transformer that generates a continuation from a seed prefix window.
+- `main.py` is the maintained CLI pipeline for training, generation, evaluation, and plotting.
+- `models/factory.py` owns the active model registry.
+- `main_old.py` remains only as a compatibility shim.
+- The old `baselines/` compatibility package has been removed; active baselines live under `models/`.
 
-The repository now uses a single active experiment entrypoint:
-- **`main.py`** is the only maintained training / generation pipeline.
-- **`main_old.py`** is retained only as a thin compatibility shim.
+The current registry contains 10 models:
 
-## Data Base
-Yahoo Finance: 2020~2023
+| Model key | Description |
+|---|---|
+| `jd_sbts` | Base Jump-Diffusion Schrödinger Bridge Time Series model |
+| `jd_sbts_f` | JD-SBTS with stress-factor feedback for jump-volatility interaction |
+| `jd_sbts_neural` | JD-SBTS with neural jump-intensity modeling |
+| `jd_sbts_f_neural` | JD-SBTS with both feedback and neural jumps |
+| `lightsb` | Light Schrödinger Bridge baseline |
+| `numba_sb` | Fast Numba-accelerated Markovian SB baseline |
+| `timegan` | GRU-based TimeGAN baseline |
+| `diffusion_ts` | DDPM-style diffusion baseline for time series |
+| `rnn` | Autoregressive GRU/LSTM baseline |
+| `transformer_ar` | Causal autoregressive Transformer baseline |
 
-### Key Mathematical Framework
-The core dynamics are modeled by a Jump-Diffusion Stochastic Differential Equation (SDE):
+---
+
+## Mathematical Framework
+
+The core SBTS family is based on a jump-diffusion stochastic differential equation:
 
 $$ dX_t = \mu(X_t, t)dt + \sigma(X_t, t)dW_t + dJ_t $$
 
-Where $W_t$ is a Brownian motion and $J_t$ represents the jump component (Poisson/Levy), handled via specific solvers and calibration techniques.
+where $W_t$ is Brownian motion and $J_t$ is a jump component. The implemented pipeline combines jump detection, local volatility calibration, drift estimation, and Euler-Maruyama generation. Feedback variants additionally model post-jump volatility amplification through a transient stress factor.
 
 ---
 
-## 🗂 Project Structure
-
-The codebase is organized into modular components for scalability and research experimentation:
+## Project Structure
 
 ```plaintext
 sbts_advanced/
-├── models/                 # Active model implementations with one interface
-│   ├── sbts_variants.py    # JD-SBTS family
-│   ├── lightsb.py          # LightSB and Numba-SB
-│   ├── timegan_baseline.py # TimeGAN baseline
-│   ├── diffusion_ts_baseline.py # Diffusion-TS baseline
-│   ├── rnn_baseline.py     # Autoregressive recurrent baseline (GRU/LSTM)
-│   ├── transformer_ar_baseline.py # Causal autoregressive Transformer baseline
-│   ├── factory.py          # Model registry / instantiation
-│   └── base.py            # Shared model API
-├── baselines/              # Legacy compatibility wrappers
-├── visualization/          # Active visualization package
-│   ├── general.py          # General experiment and benchmark plots
-│   └── feedback_plots.py   # JD-SBTS-F / stress-factor specific plots
-├── utils/                  # Utilities for analysis and compatibility wrappers
-│   ├── metrics.py          # Evaluation metrics (Wasserstein Distance, MSE, discriminative score)
-│   └── visualization.py    # Backward-compatible wrapper to visualization/
-└── main.py                 # Main entry point for the training/generation pipeline
+├── main.py                         # Active CLI experiment pipeline
+├── main_old.py                     # Legacy compatibility shim
+├── benchmark_main_pipeline.ipynb   # Main benchmark notebook and dataset builder
+├── smoke_test_new_baselines.py     # Tiny end-to-end smoke test for RNN/Transformer baselines
+├── models/
+│   ├── base.py                     # Shared TimeSeriesGenerator API
+│   ├── factory.py                  # Model registry, aliases, and default configs
+│   ├── sbts_variants.py            # JD-SBTS, feedback, and neural-jump variants
+│   ├── lightsb.py                  # LightSB and Numba-SB models
+│   ├── timegan_baseline.py         # TimeGAN baseline
+│   ├── diffusion_ts_baseline.py    # Diffusion-TS baseline
+│   ├── rnn_baseline.py             # Autoregressive recurrent baseline
+│   └── transformer_ar_baseline.py  # Causal autoregressive Transformer baseline
+├── data/
+│   └── loaders.py                  # ETF/Yahoo Finance and synthetic data loaders
+├── metrics/
+│   ├── statistical_metrics.py      # Statistical distances
+│   ├── numba_metrics.py            # Accelerated metric implementations
+│   ├── discriminative_score.py     # Classifier-based realism score
+│   └── predictive_score.py         # Forecast-transfer predictive score
+├── visualization/
+│   ├── general.py                  # General experiment and benchmark plots
+│   └── feedback_plots.py           # Feedback and stress-factor plots
+├── notebook_outputs/
+│   └── benchmark_main_pipeline/    # Cached benchmark datasets
+└── results/
+    ├── model_explanation.md        # Detailed model and parameter explanation
+    ├── output.png                  # Benchmark summary figure
+    ├── merton_*.png                # Merton experiment plots
+    └── google_*.png                # Google/GOOGL experiment plots
 ```
-
-## ✨ Key Features
-
-This project integrates advanced stochastic calculus with modern generative modeling:
-
-*   🧮 **Advanced SDE Solvers**
-    *   Implementation of **Euler-Maruyama schemes** specifically adapted for jump-diffusion processes.
-*   📉 **Robust Jump Detection**
-    *   Algorithms designed to identify discontinuities in high-frequency or daily financial data with high precision.
-*   ⚡ **LightSB Integration**
-    *   Efficient **Schrödinger Bridge** training utilizing Gaussian Mixture Model (GMM) parameterization for fast convergence.
-*   🎯 **Adaptive Bandwidth Selection**
-    *   **Cross-validation** based bandwidth selection for Kernel Density Estimation (KDE) during the diffusion process.
-*   📊 **Quantitative Evaluation**
-    *   Comprehensive suite of metrics (e.g., Wasserstein distance) to rigorously evaluate the fidelity of generated time series against historical references.
 
 ---
 
-## 🚀 Getting Started
+## Datasets
 
-### 🛠 Prerequisites
-*   **Python 3.10+** environment.
-*   Scientific computing stack: `numpy`, `scipy`, `torch`, `matplotlib`.
-*   See more on `requirements.txt`.
+### CLI Pipeline
 
-### 📥 Installation
+`main.py` supports:
 
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/ApolloHong/sbts_advanced.git
-    cd sbts_advanced
-    ```
+- Yahoo Finance ETF data through `data.loaders.load_etf_data`
+- Synthetic GBM, GBM-jump, Heston, and OU paths through `load_synthetic_data`
 
-2.  **Install dependencies**
-    ```bash
-    pip install -r requirements.txt
-    ```
+The default CLI configuration uses ETF log returns for:
 
-### 🏃 Usage
+```text
+tickers = SPY, QQQ, IWM, EEM, GLD
+start_date = 2020-01-01
+end_date = 2024-01-01
+window_size = 60
+stride = 10
+```
 
-Execute the full pipeline (Data Calibration $\rightarrow$ Jump Detection $\rightarrow$ Generation):
+For synthetic data, `window_size` and `synthetic_total_steps` are intentionally separate. This avoids the previous failure mode where `n_steps == window_size` produced too few sliding windows for neural baselines.
+
+### Benchmark Notebook
+
+`benchmark_main_pipeline.ipynb` builds and caches paper-style benchmark datasets under `notebook_outputs/benchmark_main_pipeline/datasets/`:
+
+| Dataset | Current cached shape | Notes |
+|---|---:|---|
+| `merton` | `(1000, 101, 1)` | Merton jump-diffusion paths, path representation |
+| `ou_standard` | `(1000, 101, 1)` | Ornstein-Uhlenbeck process, path representation |
+| `ou_high_frequency` | `(1000, 1001, 1)` | Higher-frequency OU process |
+| `google` | `(3846, 24, 6)` | GOOGL daily OHLCV-style windows, base-one normalized |
+
+The Google dataset cache uses `GOOGL` from Yahoo Finance. The requested range is `2004-01-01` to `2019-12-31`; the actual available start date in the cached metadata is `2004-08-19`.
+
+---
+
+## Installation
 
 ```bash
-python main.py
-python main.py --model rnn
-python main.py --model transformer_ar
+git clone https://github.com/ApolloHong/sbts_advanced.git
+cd sbts_advanced
+pip install -r requirements.txt
+```
+
+Python 3.10+ is recommended. Core dependencies include `numpy`, `scipy`, `torch`, `pandas`, `matplotlib`, and `yfinance` for Yahoo Finance downloads.
+
+---
+
+## Usage
+
+List all registered models:
+
+```bash
 python main.py --list-models
 ```
 
-When using synthetic data, the active pipeline now treats `window_size` and the
-synthetic trajectory length as separate controls:
-- `window_size`: length of each training window
-- `synthetic_total_steps`: length of the raw synthetic path before sliding-window extraction
-- `synthetic_return_type`: use `log_returns` to keep synthetic and ETF experiments on a comparable scale
+Run the default experiment:
 
-This avoids the previous failure mode where `n_steps == window_size` produced
-too few training windows for neural baselines.
+```bash
+python main.py
+```
+
+Run a specific model:
+
+```bash
+python main.py --model jd_sbts_f
+python main.py --model rnn
+python main.py --model transformer_ar
+```
+
+Run the full active registry benchmark through the CLI:
+
+```bash
+python main.py --benchmark
+```
+
+Smoke-test the new autoregressive baselines:
+
+```bash
+python smoke_test_new_baselines.py --model all
+python smoke_test_new_baselines.py --model rnn
+python smoke_test_new_baselines.py --model transformer_ar
+```
 
 All active models follow the same high-level API:
 
@@ -130,3 +182,89 @@ All active models follow the same high-level API:
 model.fit(data, time_grid=None, verbose=True)
 samples = model.generate(n_samples, n_steps=None, x0=None)
 ```
+
+---
+
+## Benchmark Protocol
+
+The benchmark notebook now uses `MODELS_TO_RUN = list(list_models().keys())`, so it stays aligned with `models/factory.py`.
+
+The fair-comparison settings in the current notebook are:
+
+- all models train on the same training windows;
+- all metrics use the same shared evaluation subset;
+- conditioned SBTS models receive the same real initial states (`shared_x0`);
+- autoregressive models receive the same real prefix windows (`shared_prefix_len_*`);
+- unconditional models share the reset random seed and evaluation subset.
+
+Important caveat: the current saved notebook output records `transformer_ar` as failed on the length-101 `ou_standard` benchmark because `transformer_ar_max_seq_len` was 64 while the sequence requires at least `seq_len - 1 = 100`. When running `transformer_ar` on this benchmark, set:
+
+```python
+config["transformer_ar_max_seq_len"] = data.shape[1]
+```
+
+before model construction.
+
+---
+
+## Latest Saved Benchmark Result
+
+The current saved benchmark output in `benchmark_main_pipeline.ipynb` uses:
+
+```text
+dataset = ou_standard
+seed = 42
+train/val/test = 700/150/150
+generation/evaluation samples = 64
+epochs override = 25 for JD-SBTS drift, LightSB, diffusion, RNN, and Transformer; 20 for TimeGAN
+```
+
+Main metrics are lower-is-better:
+
+| Model | Protocol | Wasserstein | ACF MSE | Predictive | Overall rank score |
+|---|---|---:|---:|---:|---:|
+| `jd_sbts_neural` | `shared_x0` | 0.040578 | 0.000221 | 0.499281 | 1.866667 |
+| `jd_sbts_f_neural` | `shared_x0` | 0.046222 | 0.000227 | 0.499060 | 2.200000 |
+| `rnn` | `shared_prefix_len_50` | 0.282918 | 0.000071 | 0.546354 | 3.266667 |
+| `diffusion_ts` | `shared_seed_only` | 0.288569 | 0.006900 | 0.570319 | 5.000000 |
+| `lightsb` | `shared_seed_only` | 0.399893 | 0.006888 | 0.568908 | 5.133333 |
+| `jd_sbts_f` | `shared_x0` | 0.332305 | 0.003098 | 0.887355 | 5.200000 |
+| `jd_sbts` | `shared_x0` | 0.317969 | 0.003108 | 0.895484 | 5.333333 |
+| `numba_sb` | `shared_seed_only` | 2.596094 | 0.008363 | 0.526521 | 6.300000 |
+| `timegan` | `shared_seed_only` | 0.563282 | 0.002934 | 1.155755 | 6.600000 |
+
+On this saved OU-standard run, the neural-jump SBTS variants dominate the main distributional metrics. The plain `jd_sbts` and `jd_sbts_f` variants remain strongest on the notebook's stylized-facts relative-error score, while the neural-jump variants better match Wasserstein, ACF, predictive, and discriminative metrics.
+
+The detailed architecture and parameter-count notes are in `results/model_explanation.md`.
+
+---
+
+## Result Artifacts
+
+Saved result artifacts currently include:
+
+- `results/output.png`: benchmark summary figure;
+- `results/merton_*.png`: Merton benchmark visualizations;
+- `results/google_*.png`: Google/GOOGL benchmark visualizations;
+- `results/model_explanation.md`: model-by-model architecture and parameter discussion.
+
+![Benchmark summary](results/output.png)
+
+---
+
+## Key Features
+
+- Jump-diffusion SBTS generation with static or neural jump modeling.
+- Feedback variants for jump-volatility interaction and volatility clustering.
+- Local volatility calibration with KDE-style estimators.
+- LSTM drift estimation on purified trajectories.
+- LightSB, Numba-SB, TimeGAN, diffusion, RNN, and Transformer baselines behind one factory interface.
+- Numba-accelerated statistical metrics.
+- Discriminative and predictive scores for generated time series evaluation.
+- Notebook-based reproducible benchmark dataset construction with cached metadata and splits.
+
+---
+
+## License
+
+This repository is released under the MIT License.
