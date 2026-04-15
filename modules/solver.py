@@ -352,87 +352,127 @@ class JumpDiffusionEulerSolver(SDESolver):
             Solution paths (n_samples, n_steps, n_features)
             Optionally also stress factor (n_samples, n_steps)
         """
-        n_samples = x0.shape[0]
-        n_features = x0.shape[1] if x0.ndim > 1 else 1
-        n_steps = len(time_grid)
-        
         # Ensure x0 is 2D
         if x0.ndim == 1:
             x0 = x0[:, np.newaxis]
+        n_samples = x0.shape[0]
+        n_features = x0.shape[1]
+        n_steps = len(time_grid)
         
-        # Pre-compute drift and volatility values
-        # This is more efficient than calling functions in the inner loop
-        drift_values = np.zeros((n_samples, n_steps, n_features))
-        vol_values = np.zeros((n_samples, n_steps, n_features))
-        
-        # Initialize paths for drift/vol computation
-        paths_temp = np.zeros((n_samples, n_steps, n_features))
-        paths_temp[:, 0, :] = x0
-        
-        for t in range(n_steps):
-            if t == 0:
-                x_t = x0
-            else:
-                # Use previous step's value (approximate)
-                x_t = paths_temp[:, t-1, :]
-            
-            t_val = time_grid[t]
-            
-            # Compute drift and volatility
-            drift_values[:, t, :] = self._evaluate_function(drift_fn, t_val, x_t)
-            vol_values[:, t, :] = self._evaluate_function(volatility_fn, t_val, x_t)
-        
-        # Sample jumps
-        if jump_sampler is not None:
-            jump_sizes = np.zeros((n_samples, n_steps, n_features))
-            for t in range(n_steps - 1):
-                dt = time_grid[t+1] - time_grid[t]
+        paths = np.zeros((n_samples, n_steps, n_features), dtype=np.float64)
+        paths[:, 0, :] = x0
+        stress = np.zeros((n_samples, n_steps), dtype=np.float64)
+        dW = np.random.randn(n_samples, n_steps - 1, n_features)
+
+        history_len = int(self.config.get(
+            'lstm_seq_len',
+            self.config.get('transformer_seq_len', 20)
+        ))
+        history_len = max(1, history_len)
+
+        for t in range(1, n_steps):
+            dt = float(time_grid[t] - time_grid[t - 1])
+            if dt <= 0:
+                raise ValueError("time_grid must be strictly increasing")
+
+            x_prev = paths[:, t - 1, :]
+            t_prev = float(time_grid[t - 1])
+            history = self._build_history(paths, t, history_len)
+
+            drift = self._evaluate_function(
+                drift_fn,
+                t_prev,
+                x_prev,
+                history=history
+            )
+            vol = self._evaluate_function(volatility_fn, t_prev, x_prev)
+
+            if jump_sampler is not None:
                 _, js = jump_sampler(n_samples, 1, dt)
-                if js.ndim == 2:
-                    jump_sizes[:, t, :] = js[:, 0, np.newaxis] if js.shape[1] == 1 else js[:, 0, :]
+                jump_step = self._coerce_jump_sizes(js, n_samples, n_features)
+            else:
+                jump_step = np.zeros((n_samples, n_features), dtype=np.float64)
+
+            if self.use_feedback:
+                total_jump = np.abs(jump_step).sum(axis=1)
+                stress[:, t] = (
+                    stress[:, t - 1] * np.exp(-self.kappa * dt)
+                    + self.gamma * total_jump
+                )
+                vol = vol * np.sqrt(1.0 + stress[:, t])[:, np.newaxis]
+
+            paths[:, t, :] = (
+                x_prev
+                + drift * dt
+                + vol * np.sqrt(dt) * dW[:, t - 1, :]
+                + jump_step
+            )
+
+        if return_stress:
+            return paths, stress
+        return paths
+
+    def _build_history(
+        self,
+        paths: np.ndarray,
+        step_idx: int,
+        history_len: int
+    ) -> np.ndarray:
+        """Build a fixed-length state history ending at step_idx - 1."""
+        n_samples, _, n_features = paths.shape
+        history = np.zeros((n_samples, history_len, n_features), dtype=np.float64)
+        start = max(0, step_idx - history_len)
+        available = paths[:, start:step_idx, :]
+        if available.shape[1] == 0:
+            return history
+        history[:, -available.shape[1]:, :] = available
+        if available.shape[1] < history_len:
+            history[:, :history_len - available.shape[1], :] = available[:, :1, :]
+        return history
+
+    def _coerce_jump_sizes(
+        self,
+        jump_sizes: np.ndarray,
+        n_samples: int,
+        n_features: int
+    ) -> np.ndarray:
+        """Normalize jump sampler output to (n_samples, n_features)."""
+        js = np.asarray(jump_sizes, dtype=np.float64)
+        if js.ndim == 3:
+            if js.shape[1] != 1:
+                js = js[:, 0, :]
+            else:
+                js = js[:, 0, :]
+        elif js.ndim == 2:
+            if js.shape == (n_samples, n_features):
+                pass
+            elif js.shape[0] == n_samples and js.shape[1] == 1:
+                js = np.repeat(js, n_features, axis=1)
+            elif js.shape[0] == n_samples:
+                if js.shape[1] >= n_features:
+                    js = js[:, :n_features]
                 else:
-                    jump_sizes[:, t, :] = js[:, np.newaxis]
+                    reps = int(np.ceil(n_features / js.shape[1]))
+                    js = np.tile(js, (1, reps))[:, :n_features]
+            else:
+                js = np.broadcast_to(js, (n_samples, n_features))
+        elif js.ndim == 1:
+            if len(js) != n_samples:
+                js = np.broadcast_to(js, (n_samples,))
+            js = np.repeat(js[:, np.newaxis], n_features, axis=1)
         else:
-            jump_sizes = np.zeros((n_samples, n_steps, n_features))
-        
-        # Generate Brownian increments
-        dW = np.random.randn(n_samples, n_steps, n_features)
-        
-        # Solve using Numba
-        if self.use_feedback:
-            paths, stress = _euler_maruyama_feedback_numba(
-                x0.astype(np.float64),
-                time_grid.astype(np.float64),
-                drift_values.astype(np.float64),
-                vol_values.astype(np.float64),
-                jump_sizes.astype(np.float64),
-                dW.astype(np.float64),
-                self.kappa,
-                self.gamma
-            )
-            
-            if return_stress:
-                return paths, stress
-            return paths
-        else:
-            paths = _euler_maruyama_numba(
-                x0.astype(np.float64),
-                time_grid.astype(np.float64),
-                drift_values.astype(np.float64),
-                vol_values.astype(np.float64),
-                jump_sizes.astype(np.float64),
-                dW.astype(np.float64)
-            )
-            
-            if return_stress:
-                return paths, np.zeros((n_samples, n_steps))
-            return paths
+            js = np.full((n_samples, n_features), float(js))
+
+        if js.shape != (n_samples, n_features):
+            js = np.broadcast_to(js, (n_samples, n_features)).copy()
+        return js
     
     def _evaluate_function(
         self,
         fn: Callable,
         t: float,
-        x: np.ndarray
+        x: np.ndarray,
+        history: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
         Evaluate a function, handling different return shapes.
@@ -446,13 +486,21 @@ class JumpDiffusionEulerSolver(SDESolver):
             Function values (n_samples, n_features)
         """
         try:
-            result = fn(t, x)
+            if history is None:
+                result = fn(t, x)
+            else:
+                try:
+                    result = fn(t, x, history=history)
+                except TypeError:
+                    result = fn(t, x)
             
             # Handle scalar return
             if np.isscalar(result):
                 return np.full_like(x, result)
             
             result = np.asarray(result)
+            if result.shape == x.shape:
+                return result
             
             # Handle 1D return
             if result.ndim == 1:
@@ -460,8 +508,13 @@ class JumpDiffusionEulerSolver(SDESolver):
                     return result[:, np.newaxis] * np.ones((1, x.shape[1]))
                 elif len(result) == x.shape[1]:
                     return np.ones((x.shape[0], 1)) * result[np.newaxis, :]
+            elif result.ndim == 2:
+                if result.shape[0] == x.shape[0] and result.shape[1] == 1:
+                    return result * np.ones((1, x.shape[1]))
+                if result.shape[0] == 1 and result.shape[1] == x.shape[1]:
+                    return np.ones((x.shape[0], 1)) * result
             
-            return result
+            return np.broadcast_to(result, x.shape).copy()
             
         except Exception as e:
             warnings.warn(f"Error evaluating function: {e}")

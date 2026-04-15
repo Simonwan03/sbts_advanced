@@ -1,73 +1,42 @@
 {
-    "project": {
-        "name": "JD-SBTS",
-        "version": "2.0.0",
-        "description": "Jump-Diffusion Schrödinger Bridge Time Series"
-    },
-    
-    "data": {
-        "USE_REAL_DATA": true,
-        "FETCH_SP500": true,
-        "SP500_LIMIT": 100,
-        "START_DATE": "2020-01-01",
-        "END_DATE": "2023-12-31",
-        "SEQ_LEN": 60
-    },
-    
-    "models": {
-        "MODELS_TO_RUN": ["Kernel", "SBTS-LSTM", "LightSB"]
-    },
-    
-    "physics": {
-        "USE_JUMPS": true,
-        "USE_NEURAL_JUMPS": false,
-        "JUMP_THRESHOLD_STD": 4.0,
-        "VOL_BANDWIDTH": 0.5,
-        "PURIFICATION_METHOD": "filter_interpolate"
-    },
-    
-    "neural_jumps": {
-        "NEURAL_JUMP_HIDDEN_DIM": 64,
-        "NEURAL_JUMP_LR": 0.001,
-        "NEURAL_JUMP_EPOCHS": 50,
-        "NEURAL_JUMP_SEQ_LEN": 10,
-        "NEURAL_JUMP_DROPOUT": 0.1
-    },
-    
-    "kernel": {
-        "USE_CV_FOR_KERNEL": true,
-        "BO_N_TRIALS": 15,
-        "KERNEL_TEMP_SCALE": 1.1
-    },
-    
-    "lstm": {
-        "LSTM_HIDDEN": 128,
-        "LSTM_LR": 0.005,
-        "LSTM_EPOCHS": 80,
-        "LSTM_WEIGHT_DECAY": 0.001,
-        "LSTM_DROPOUT": 0.3,
-        "LSTM_TEMP_SCALE": 1.1,
-        "LSTM_DRIFT_DAMPENING": 0.9,
-        "LSTM_USE_HUBER_LOSS": false,
-        "LSTM_HUBER_DELTA": 1.0
-    },
-    
-    "lightsb": {
-        "LIGHTSB_COMPONENTS": 20,
-        "LIGHTSB_LR": 0.005,
-        "LIGHTSB_STEPS": 1000,
-        "LIGHTSB_MIN_COV": 0.01,
-        "LIGHTSB_TEMP_SCALE": 1.1
-    },
-    
-    "generation": {
-        "N_GEN_PATHS": 500,
-        "SYNTHETIC_SAMPLES": 10000
-    },
-    
-    "_comments": {
-        "USE_NEURAL_JUMPS": "Set to true to enable Neural MJD with time-varying jump intensity. Requires more computation but captures endogenous jump dynamics.",
-        "PURIFICATION_METHOD": "Options: 'filter_interpolate' (recommended) or 'clip' (legacy). Filter & interpolate preserves volatility smile shape.",
-        "LSTM_DRIFT_DAMPENING": "Scale factor for drift to prevent explosive paths. Set to 1.0 to disable."
-    }
+    "experiment_name": "jdsbts_experiment",
+    "seed": 42,
+    "verbose": true,
+    "data_source": "etf",
+    "tickers": ["SPY", "QQQ", "IWM", "EEM", "GLD"],
+    "start_date": "2020-01-01",
+    "end_date": "2024-01-01",
+    "window_size": 60,
+    "stride": 10,
+    "fallback_to_synthetic_on_data_error": false,
+    "synthetic_type": "gbm_jump",
+    "n_synthetic_samples": 500,
+    "synthetic_total_steps": 240,
+    "synthetic_return_type": "log_returns",
+    "models_to_run": ["jd_sbts", "jd_sbts_f"],
+    "use_neural_jumps": false,
+    "use_feedback": true,
+    "jump_threshold_std": 4.0,
+    "jump_rolling_window": 20,
+    "feedback_kappa": 5.0,
+    "feedback_gamma": 0.5,
+    "drift_estimator": "lstm",
+    "lstm_hidden": 128,
+    "lstm_epochs": 50,
+    "lstm_lr": 0.005,
+    "lstm_dropout": 0.3,
+    "lstm_use_huber": true,
+    "vol_bandwidth": 0.5,
+    "vol_n_t_grid": 50,
+    "vol_n_x_grid": 100,
+    "n_generate": 100,
+    "n_steps": null,
+    "run_discriminative": true,
+    "run_predictive": true,
+    "discriminative_iterations": 500,
+    "predictive_iterations": 500,
+    "acf_max_lag": 15,
+    "output_dir": "experiments",
+    "save_models": true,
+    "save_plots": true
 }

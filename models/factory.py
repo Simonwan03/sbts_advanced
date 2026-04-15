@@ -251,7 +251,7 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
             'transformer_ar_epochs': 50,
             'transformer_ar_lr': 0.001,
             'transformer_ar_batch_size': 128,
-            'transformer_ar_max_seq_len': 64,
+            'transformer_ar_max_seq_len': None,
             'transformer_ar_context_len': None,
         })
     

@@ -199,6 +199,130 @@ def _match_eval_shapes(
     return real_data[:n_eval], gen_data[:n_eval]
 
 
+LEGACY_MODEL_NAME_MAP = {
+    'kernel': 'jd_sbts',
+    'sbts-lstm': 'jd_sbts',
+    'lstm': 'jd_sbts',
+    'lightsb': 'lightsb',
+    'light_sb': 'lightsb',
+    'light-sb': 'lightsb',
+    'timegan': 'timegan',
+    'diffusion-ts': 'diffusion_ts',
+    'diffusion_ts': 'diffusion_ts',
+    'rnn': 'rnn',
+    'transformer': 'transformer_ar',
+    'transformer_ar': 'transformer_ar',
+}
+
+CONDITIONED_X0_MODELS = {
+    'jd_sbts',
+    'jd_sbts_f',
+    'jd_sbts_neural',
+    'jd_sbts_f_neural',
+}
+CONDITIONED_PREFIX_MODELS = {'rnn', 'transformer_ar'}
+
+
+def _normalize_model_name(model_name: str) -> str:
+    """Normalize legacy display names into active factory keys."""
+    key = str(model_name).strip().lower().replace(' ', '_')
+    return LEGACY_MODEL_NAME_MAP.get(key, key)
+
+
+def _merge_legacy_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert the old nested uppercase config schema to the active flat schema."""
+    if not any(k in user_config for k in ('data', 'models', 'physics', 'lstm', 'lightsb')):
+        return user_config
+
+    flat = {
+        k: v for k, v in user_config.items()
+        if k not in {'project', 'data', 'models', 'physics', 'neural_jumps', 'kernel', 'lstm', 'lightsb', 'generation', '_comments'}
+    }
+
+    data_cfg = user_config.get('data', {})
+    if data_cfg:
+        if 'USE_REAL_DATA' in data_cfg:
+            flat['data_source'] = 'etf' if data_cfg['USE_REAL_DATA'] else 'synthetic'
+        if 'START_DATE' in data_cfg:
+            flat['start_date'] = data_cfg['START_DATE']
+        if 'END_DATE' in data_cfg:
+            flat['end_date'] = data_cfg['END_DATE']
+        if 'SEQ_LEN' in data_cfg:
+            flat['window_size'] = data_cfg['SEQ_LEN']
+
+    models_cfg = user_config.get('models', {})
+    if 'MODELS_TO_RUN' in models_cfg:
+        flat['models_to_run'] = [
+            _normalize_model_name(name) for name in models_cfg['MODELS_TO_RUN']
+        ]
+
+    physics_cfg = user_config.get('physics', {})
+    if physics_cfg:
+        if 'USE_NEURAL_JUMPS' in physics_cfg:
+            flat['use_neural_jumps'] = physics_cfg['USE_NEURAL_JUMPS']
+        if 'JUMP_THRESHOLD_STD' in physics_cfg:
+            flat['jump_threshold_std'] = physics_cfg['JUMP_THRESHOLD_STD']
+        if 'VOL_BANDWIDTH' in physics_cfg:
+            flat['vol_bandwidth'] = physics_cfg['VOL_BANDWIDTH']
+
+    neural_jump_cfg = user_config.get('neural_jumps', {})
+    if neural_jump_cfg:
+        mapping = {
+            'NEURAL_JUMP_HIDDEN_DIM': 'neural_jump_hidden_dim',
+            'NEURAL_JUMP_LR': 'neural_jump_lr',
+            'NEURAL_JUMP_EPOCHS': 'neural_jump_epochs',
+            'NEURAL_JUMP_SEQ_LEN': 'neural_jump_seq_len',
+            'NEURAL_JUMP_DROPOUT': 'neural_jump_dropout',
+        }
+        flat.update({dst: neural_jump_cfg[src] for src, dst in mapping.items() if src in neural_jump_cfg})
+
+    lstm_cfg = user_config.get('lstm', {})
+    if lstm_cfg:
+        mapping = {
+            'LSTM_HIDDEN': 'lstm_hidden',
+            'LSTM_LR': 'lstm_lr',
+            'LSTM_EPOCHS': 'lstm_epochs',
+            'LSTM_WEIGHT_DECAY': 'lstm_weight_decay',
+            'LSTM_DROPOUT': 'lstm_dropout',
+            'LSTM_DRIFT_DAMPENING': 'lstm_drift_dampening',
+            'LSTM_USE_HUBER_LOSS': 'lstm_use_huber',
+            'LSTM_HUBER_DELTA': 'lstm_huber_delta',
+        }
+        flat.update({dst: lstm_cfg[src] for src, dst in mapping.items() if src in lstm_cfg})
+
+    generation_cfg = user_config.get('generation', {})
+    if generation_cfg:
+        if 'N_GEN_PATHS' in generation_cfg:
+            flat['n_generate'] = generation_cfg['N_GEN_PATHS']
+        if 'SYNTHETIC_SAMPLES' in generation_cfg:
+            flat['n_synthetic_samples'] = generation_cfg['SYNTHETIC_SAMPLES']
+
+    return flat
+
+
+def _build_generation_kwargs(
+    model_name: str,
+    model: Any,
+    reference_windows: np.ndarray,
+    n_samples: int,
+    n_steps: int,
+    fair_generation: bool = True,
+) -> Dict[str, Any]:
+    """Build model-specific generation kwargs for fair comparisons."""
+    kwargs: Dict[str, Any] = {'n_samples': n_samples, 'n_steps': n_steps}
+    if not fair_generation or len(reference_windows) == 0:
+        return kwargs
+
+    reference = reference_windows[:n_samples]
+    if model_name in CONDITIONED_X0_MODELS:
+        kwargs['x0'] = reference[:, 0, :].astype(np.float32)
+    elif model_name in CONDITIONED_PREFIX_MODELS:
+        context_len = int(getattr(model, 'context_len', max(1, n_steps // 2)))
+        context_len = max(1, min(context_len, reference.shape[1] - 1))
+        kwargs['x0'] = reference[:, :context_len, :].astype(np.float32)
+    return kwargs
+
+
 # ============================================
 # Main Experiment Runner (New Architecture)
 # ============================================
@@ -313,6 +437,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     
     trained_models = {}
     training_times = {}
+    failures = {}
     
     for model_name in models_to_run:
         if verbose:
@@ -322,6 +447,11 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             # Get model config
             model_config = modules['get_default_config'](model_name)
             model_config.update(config)  # Override with experiment config
+            if _normalize_model_name(model_name) == 'transformer_ar':
+                required_len = max(1, data.shape[1] - 1)
+                current_max_len = model_config.get('transformer_ar_max_seq_len')
+                if current_max_len is None or current_max_len < required_len:
+                    model_config['transformer_ar_max_seq_len'] = required_len
             
             # Create model
             model = modules['get_model'](model_name, model_config)
@@ -340,10 +470,15 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"  {model_name} training time: {train_time:.2f}s")
         
         except Exception as e:
+            failures[model_name] = {'phase': 'training', 'error': str(e)}
             warnings.warn(f"Failed to train {model_name}: {e}")
             exp_manager.log(f"ERROR: {model_name} failed: {e}")
             import traceback
             traceback.print_exc()
+
+    if not trained_models:
+        exp_manager.save_artifact("failures.json", failures)
+        raise RuntimeError(f"No models trained successfully: {failures}")
     
     # ========================================
     # Generate Samples
@@ -351,7 +486,9 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     if verbose:
         print("\n[Phase 3] Generating Samples...")
     
-    n_generate = config.get('n_generate', 100)
+    n_generate = int(config.get('n_generate', 100))
+    if config.get('fair_generation', True):
+        n_generate = min(n_generate, len(data))
     n_steps = config.get('n_steps') or data.shape[1]
     
     generated_data = {}
@@ -364,20 +501,22 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
         
         try:
             start_time = time.perf_counter()
+            reference_windows = data[:min(n_generate, len(data))]
+            gen_kwargs = _build_generation_kwargs(
+                model_name=_normalize_model_name(model_name),
+                model=model,
+                reference_windows=reference_windows,
+                n_samples=n_generate,
+                n_steps=n_steps,
+                fair_generation=config.get('fair_generation', True),
+            )
             
             # Check if model supports stress factor output
             if hasattr(model, 'use_feedback') and model.use_feedback:
-                gen_paths, stress = model.generate(
-                    n_samples=n_generate,
-                    n_steps=n_steps,
-                    return_stress=True
-                )
+                gen_paths, stress = model.generate(return_stress=True, **gen_kwargs)
                 stress_trajectories[model_name] = stress
             else:
-                gen_paths = model.generate(
-                    n_samples=n_generate,
-                    n_steps=n_steps
-                )
+                gen_paths = model.generate(**gen_kwargs)
             
             gen_time = time.perf_counter() - start_time
             
@@ -391,10 +530,15 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"  Generated shape: {gen_paths.shape}")
         
         except Exception as e:
+            failures[model_name] = {'phase': 'generation', 'error': str(e)}
             warnings.warn(f"Failed to generate from {model_name}: {e}")
             exp_manager.log(f"ERROR: {model_name} generation failed: {e}")
             import traceback
             traceback.print_exc()
+
+    if not generated_data:
+        exp_manager.save_artifact("failures.json", failures)
+        raise RuntimeError(f"No models generated successfully: {failures}")
     
     # ========================================
     # Evaluate Models
@@ -419,16 +563,25 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             )
             
             # Stylized facts
+            real_returns = np.diff(real_eval, axis=1)
+            if real_returns.ndim == 3:
+                real_returns = real_returns[:, :, 0]
             gen_returns = np.diff(gen_data, axis=1)
             if gen_returns.ndim == 3:
                 gen_returns = gen_returns[:, :, 0]
+            real_stylized = modules['compute_stylized_facts_numba'](real_returns.flatten())
             stylized = modules['compute_stylized_facts_numba'](gen_returns.flatten())
             
             metrics = {
                 'train_time': training_times.get(model_name, 0),
                 'gen_time': generation_times.get(model_name, 0),
                 **stats,
-                **{f'stylized_{k}': v for k, v in stylized.items()}
+                **{f'stylized_real_{k}': v for k, v in real_stylized.items()},
+                **{f'stylized_gen_{k}': v for k, v in stylized.items()},
+                **{
+                    f'stylized_abs_error_{k}': abs(stylized[k] - real_stylized[k])
+                    for k in stylized
+                }
             }
             
             # Discriminative score (optional)
@@ -474,6 +627,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                     print(f"    Disc Score: {metrics['discriminative_score']:.4f}")
         
         except Exception as e:
+            failures[model_name] = {'phase': 'evaluation', 'error': str(e)}
             warnings.warn(f"Evaluation failed for {model_name}: {e}")
             exp_manager.log(f"ERROR: {model_name} evaluation failed: {e}")
     
@@ -485,6 +639,8 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     
     # Save metrics
     exp_manager.save_metrics(metrics_results)
+    if failures:
+        exp_manager.save_artifact("failures.json", failures)
     
     # Save models
     if config.get('save_models', True):
@@ -550,7 +706,8 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
         'metrics': metrics_results,
         'generated_data': generated_data,
         'stress_trajectories': stress_trajectories,
-        'experiment_dir': str(exp_manager.run_dir)
+        'experiment_dir': str(exp_manager.run_dir),
+        'failures': failures,
     }
 
 
@@ -666,11 +823,12 @@ def main():
     if args.config:
         with open(args.config, 'r') as f:
             user_config = json.load(f)
+        user_config = _merge_legacy_config(user_config)
         config.update(user_config)
     
     # Override with CLI arguments
     if args.model:
-        config['models_to_run'] = [args.model]
+        config['models_to_run'] = [_normalize_model_name(args.model)]
     
     if args.output:
         config['output_dir'] = args.output
@@ -683,6 +841,11 @@ def main():
     
     if args.synthetic:
         config['data_source'] = 'synthetic'
+
+    config['models_to_run'] = [
+        _normalize_model_name(name)
+        for name in config.get('models_to_run', ['jd_sbts'])
+    ]
     
     # Run experiment or benchmark
     try:

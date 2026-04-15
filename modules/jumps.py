@@ -28,7 +28,11 @@ class JumpDetector(ABC):
         self.jump_std = None
     
     @abstractmethod
-    def fit(self, data: np.ndarray) -> 'JumpDetector':
+    def fit(
+        self,
+        data: np.ndarray,
+        time_grid: Optional[np.ndarray] = None
+    ) -> 'JumpDetector':
         pass
     
     @abstractmethod
@@ -182,7 +186,11 @@ class StaticJumpDetector(JumpDetector):
         self.jump_stds = None
         self.n_features = None
     
-    def fit(self, data: np.ndarray) -> 'StaticJumpDetector':
+    def fit(
+        self,
+        data: np.ndarray,
+        time_grid: Optional[np.ndarray] = None
+    ) -> 'StaticJumpDetector':
         """
         Fit jump detector and estimate parameters.
         
@@ -199,6 +207,12 @@ class StaticJumpDetector(JumpDetector):
         
         n_samples, seq_len, n_features = data.shape
         self.n_features = n_features
+        if time_grid is not None and len(time_grid) > 1:
+            dt = float(np.mean(np.diff(np.asarray(time_grid, dtype=np.float64))))
+        else:
+            dt = float(self.config.get('dt', self.config.get('jump_dt', 1.0)))
+        if dt <= 0:
+            raise ValueError("time_grid must be strictly increasing for jump calibration")
         
         # Compute returns
         returns = np.diff(data, axis=1)
@@ -221,7 +235,7 @@ class StaticJumpDetector(JumpDetector):
             
             # Estimate parameters
             n_jumps = np.sum(jump_mask)
-            total_time = n_samples * (seq_len - 1)
+            total_time = n_samples * (seq_len - 1) * dt
             
             self.jump_intensities[k] = n_jumps / total_time if total_time > 0 else 0.0
             
@@ -342,6 +356,19 @@ class StaticJumpDetector(JumpDetector):
             intensity = self.jump_intensities[feature_idx]
             mean = self.jump_means[feature_idx]
             std = self.jump_stds[feature_idx]
+        elif self.n_features is not None and self.n_features > 1:
+            jump_sizes = np.zeros((n_samples, n_steps, self.n_features))
+            jump_mask = np.zeros((n_samples, n_steps, self.n_features), dtype=bool)
+            for k in range(self.n_features):
+                jump_probs = 1 - np.exp(-self.jump_intensities[k] * dt)
+                jump_mask[:, :, k] = np.random.random((n_samples, n_steps)) < jump_probs
+                feature_jumps = np.random.normal(
+                    self.jump_means[k],
+                    self.jump_stds[k],
+                    (n_samples, n_steps)
+                )
+                jump_sizes[:, :, k] = feature_jumps * jump_mask[:, :, k]
+            return jump_mask, jump_sizes
         else:
             intensity = self.jump_intensity
             mean = self.jump_mean
@@ -508,7 +535,11 @@ class NeuralJumpDetector(JumpDetector):
         self.static_detector = None
         self.n_features = None
     
-    def fit(self, data: np.ndarray) -> 'NeuralJumpDetector':
+    def fit(
+        self,
+        data: np.ndarray,
+        time_grid: Optional[np.ndarray] = None
+    ) -> 'NeuralJumpDetector':
         """
         Fit neural jump detector.
         
@@ -532,7 +563,7 @@ class NeuralJumpDetector(JumpDetector):
         
         # First, use static detector to get jump labels
         self.static_detector = StaticJumpDetector(self.config)
-        self.static_detector.fit(data)
+        self.static_detector.fit(data, time_grid=time_grid)
         
         # Get jump parameters from static detector
         self.jump_intensity = self.static_detector.jump_intensity

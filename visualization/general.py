@@ -68,21 +68,26 @@ def plot_performance_metrics(df_metrics, save_path="outputs/performance_metrics.
     """
     set_style()
     _ensure_dir(save_path)
+    df_plot = df_metrics.copy()
+    if 'WD' not in df_plot.columns and 'wasserstein_distance' in df_plot.columns:
+        df_plot['WD'] = df_plot['wasserstein_distance']
+    if 'ACF_MSE' not in df_plot.columns and 'acf_mse' in df_plot.columns:
+        df_plot['ACF_MSE'] = df_plot['acf_mse']
     
     metrics = ['train_time', 'gen_time', 'WD', 'ACF_MSE']
     titles = ['Training Time (s)', 'Generation Time (s)', 'Wasserstein Dist (Lower Better)', 'ACF MSE (Lower Better)']
     
     fig, axes = plt.subplots(1, 4, figsize=(24, 5))
     
-    palette = [STYLE_MAP.get(idx, {'color': 'gray'})['color'] for idx in df_metrics.index]
+    palette = [STYLE_MAP.get(idx, {'color': 'gray'})['color'] for idx in df_plot.index]
     
     for i, metric in enumerate(metrics):
-        if metric in df_metrics.columns:
+        if metric in df_plot.columns:
             # --- FIX: Added hue and legend=False to silence warning ---
             sns.barplot(
-                x=df_metrics.index, 
-                y=df_metrics[metric], 
-                hue=df_metrics.index, # Assign x to hue
+                x=df_plot.index, 
+                y=df_plot[metric], 
+                hue=df_plot.index, # Assign x to hue
                 ax=axes[i], 
                 palette=palette, 
                 legend=False          # Disable legend to mimic old behavior
@@ -254,6 +259,27 @@ def plot_volatility_surface(vol_model, data_range, T=1.0, save_path="outputs/vol
     """
     set_style()
     _ensure_dir(save_path)
+
+    if hasattr(vol_model, 'get_surface'):
+        try:
+            t_grid_model, x_grid_model, vol_surface = vol_model.get_surface()
+            Vol_mesh = vol_surface[:, :, 0] if vol_surface.ndim == 3 else vol_surface
+            T_mesh, X_mesh = np.meshgrid(t_grid_model, x_grid_model, indexing='ij')
+
+            fig, ax = plt.subplots(figsize=(8, 6))
+            cp = ax.contourf(T_mesh, X_mesh, Vol_mesh, 20, cmap='magma')
+            cbar = fig.colorbar(cp)
+            cbar.set_label("Local Volatility $\\sigma(t, x)$")
+            ax.set_title("Calibrated Local Volatility Surface (Asset 1 Slice)", fontweight='bold')
+            ax.set_xlabel("Time (t)")
+            ax.set_ylabel("State (x)")
+            plt.tight_layout()
+            plt.savefig(save_path)
+            print(f"[Plot Saved] {save_path}")
+            plt.close()
+            return
+        except Exception as e:
+            print(f"[Warning] Could not plot active vol surface directly: {e}")
     
     # 1. Create Grid
     t_grid = np.linspace(0, T, 50)
@@ -297,7 +323,7 @@ def plot_volatility_surface(vol_model, data_range, T=1.0, save_path="outputs/vol
     fig, ax = plt.subplots(figsize=(8, 6))
     cp = ax.contourf(T_mesh, X_mesh, Vol_mesh, 20, cmap='magma')
     cbar = fig.colorbar(cp)
-    cbar.set_label("Local Volatility $\sigma(t, x)$")
+    cbar.set_label("Local Volatility $\\sigma(t, x)$")
     
     ax.set_title("Calibrated Local Volatility Surface (Asset 1 Slice)", fontweight='bold')
     ax.set_xlabel("Time (t)")
@@ -353,7 +379,7 @@ def plot_multi_asset_jumps(dates, continuous_returns, tickers, threshold_std=4.0
             ax.scatter(dates[is_jump], series[is_jump], 
                        color='#E64B35', s=20, zorder=5, label='Detected Jump')
             
-        ax.set_title(f"{ticker} Jump Detection (Threshold = {threshold_std}$\sigma$)", fontweight='bold')
+        ax.set_title(f"{ticker} Jump Detection (Threshold = {threshold_std}$\\sigma$)", fontweight='bold')
         ax.set_ylabel("Log Return")
         
         # Format X-Axis as Years
@@ -485,7 +511,7 @@ def plot_jumps_on_price(dates, returns, tickers, threshold_std=4.0, save_path="o
                 ax.scatter(dates[neg_jumps], price_series[neg_jumps], 
                            color='#E64B35', s=40, zorder=5, marker='v', label='Negative Jump')
 
-        ax.set_title(f"{ticker} Price Evolution with Jumps (Threshold={threshold_std}$\sigma$)", fontweight='bold')
+        ax.set_title(f"{ticker} Price Evolution with Jumps (Threshold={threshold_std}$\\sigma$)", fontweight='bold')
         ax.set_ylabel("Price ($)")
         
         # Highlight 2020 Crisis Area

@@ -484,7 +484,8 @@ def plot_model_comparison_grid(
             for bar, hatch in zip(bars, hatches):
                 bar.set_hatch(hatch)
             
-            ax.axhline(y=0.5, color='red', linestyle='--', label='Random Guess')
+            ax.axhline(y=0.0, color='green', linestyle='--', label='Ideal')
+            ax.axhline(y=0.5, color='red', linestyle='--', label='Worst')
             ax.set_xticks(range(len(models)))
             ax.set_xticklabels(models, rotation=45, ha='right')
             ax.set_ylabel('Discriminative Score')

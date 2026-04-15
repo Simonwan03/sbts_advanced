@@ -161,7 +161,7 @@ class JDSBTS(TimeSeriesGenerator):
         jump_start = time.perf_counter()
         
         self.jump_detector = get_jump_detector(self.config)
-        self.jump_detector.fit(data)
+        self.jump_detector.fit(data, time_grid=time_grid)
         
         jump_mask = self.jump_detector.detect(data)
         n_jumps = np.sum(jump_mask)
@@ -354,11 +354,26 @@ class JDSBTS(TimeSeriesGenerator):
         
         # Ensure 2D
         if x0.ndim == 1:
-            x0 = x0[:, np.newaxis]
+            if self.n_features == 1 and len(x0) == n_samples:
+                x0 = x0[:, np.newaxis]
+            elif len(x0) == self.n_features:
+                x0 = np.repeat(x0[np.newaxis, :], n_samples, axis=0)
+            else:
+                raise ValueError(
+                    "x0 must have shape (n_samples,), (n_features,), "
+                    "or (n_samples, n_features)"
+                )
+        elif x0.ndim == 2 and x0.shape[0] == 1 and n_samples > 1:
+            x0 = np.repeat(x0, n_samples, axis=0)
+        elif x0.ndim != 2 or x0.shape[0] != n_samples:
+            raise ValueError("x0 batch size must be 1 or match n_samples")
         
         # Define drift function
-        def drift_fn(t, x):
-            return self.drift_estimator.predict(t, x)
+        def drift_fn(t, x, history=None):
+            try:
+                return self.drift_estimator.predict(t, x, history=history)
+            except TypeError:
+                return self.drift_estimator.predict(t, x)
         
         # Define volatility function
         def vol_fn(t, x):

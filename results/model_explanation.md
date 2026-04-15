@@ -21,6 +21,173 @@ MODELS_TO_RUN = list(list_models().keys())
 9. `rnn`
 10. `transformer_ar`
 
+## Dataset Configuration
+
+`benchmark_main_pipeline.ipynb` 中的 `DATASET_CONFIGS` 控制 benchmark 使用的数据集生成、下载、预处理和划分方式。当前包含四类数据集：
+
+- `merton`：一维 Merton jump-diffusion 模拟路径。
+- `ou_standard`：标准采样频率下的一维 Ornstein-Uhlenbeck 模拟路径。
+- `ou_high_frequency`：更高采样频率下的一维 Ornstein-Uhlenbeck 模拟路径。
+- `google`：从 Yahoo Finance / `yfinance` 下载的 GOOGL 日频股票窗口数据。
+
+### Common Simulated-Data Parameters
+
+以下参数主要用于 `merton`、`ou_standard` 和 `ou_high_frequency`：
+
+| Parameter | Meaning |
+|---|---|
+| `M` | 独立样本数，即生成多少条时间序列路径。`M=1000` 表示生成 1000 条路径。 |
+| `N` | 每条路径的时间步数量，不包含初始点 `Y0`。如果使用 `representation="path"`，最终序列长度是 `N + 1`。 |
+| `dt` | 相邻两个观测点之间的时间间隔。`1 / 252` 通常表示一个交易日，因为一年约有 252 个交易日。 |
+| `Y0` | 每条模拟路径的初始值。 |
+| `representation` | 输出形式。`"path"` 输出完整路径，形状为 `(M, N + 1, 1)`；`"increments"` 输出相邻时间点增量，形状为 `(M, N, 1)`。 |
+| `train_frac` | 训练集比例。`0.70` 表示 70% 的样本用于训练。 |
+| `val_frac` | 验证集比例。`0.15` 表示 15% 的样本用于验证。 |
+| `shuffle` | 划分 train / validation / test 之前是否打乱样本顺序。 |
+
+测试集比例没有显式写在配置中，而是由剩余样本决定：
+
+```text
+test_frac = 1 - train_frac - val_frac
+```
+
+在当前配置下，测试集比例为 15%。
+
+### `merton`
+
+`merton` 数据集模拟一维 Merton jump-diffusion，也就是带跳跃的扩散过程。notebook 中每个 Euler 子步大致按下面方式更新：
+
+```text
+Y = Y + a * sub_dt + b * dW + jump_update
+```
+
+关键参数：
+
+| Parameter | Meaning |
+|---|---|
+| `N_pi` | 每个观测间隔 `dt` 内部细分出的 Euler 子步数。`N_pi=100` 表示每个 `dt` 用 100 个更小步长模拟，`sub_dt = dt / N_pi`。 |
+| `a` | 连续漂移项 drift。数值越大，路径整体越倾向向上漂移。当前为 `0.0`。 |
+| `b` | Brownian diffusion 的波动强度，也可以理解为连续噪声的 volatility。当前为 `2.0`。 |
+| `lambda_eta` | 跳跃强度，即单位时间内跳跃发生的平均频率。代码中每个子步的跳跃次数服从 `Poisson(lambda_eta * sub_dt)`。 |
+| `m_J` | 跳跃幅度正态分布的均值参数。代码中先采样 `Normal(m_J, v_J)`，再取绝对值作为跳跃幅度。 |
+| `v_J` | 跳跃幅度正态分布的标准差参数。注意这里是 `numpy.random.normal(m_J, v_J)` 的第二个参数，因此是 standard deviation，不是 variance。 |
+
+当前实现中的 jump sign 带有向 `Y0` 回拉的规则：
+
+- 如果当前状态 `Y > Y0`，跳跃方向为负。
+- 如果当前状态 `Y < Y0`，跳跃方向为正。
+- 如果当前状态正好等于 `Y0`，跳跃方向随机取正或负。
+
+因此 `merton` 当前默认输出形状为：
+
+```text
+(1000, 101, 1)
+```
+
+即 1000 条路径、每条 101 个时间点、1 个特征。
+
+### `ou_standard`
+
+`ou_standard` 模拟 Ornstein-Uhlenbeck process：
+
+```text
+dY_t = theta * (a - Y_t) * dt + b * dW_t
+```
+
+关键参数：
+
+| Parameter | Meaning |
+|---|---|
+| `theta` | 均值回复速度。越大，路径越快被拉回长期均值 `a`。当前为 `100.0`。 |
+| `a` | OU 过程的长期均值，即路径被拉向的水平。当前为 `1.0`。 |
+| `b` | 随机扰动强度 / volatility。当前为 `10.0`。 |
+| `Y0` | 初始值。当前为 `1.0`，刚好等于长期均值。 |
+
+当前配置使用：
+
+```text
+M = 1000
+N = 100
+dt = 1 / 252
+```
+
+默认输出形状为：
+
+```text
+(1000, 101, 1)
+```
+
+### `ou_high_frequency`
+
+`ou_high_frequency` 使用与 `ou_standard` 相同的 OU 模型，但采样频率更高：
+
+```text
+N = 1000
+dt = (1 / 252) * (1 / 10)
+```
+
+也就是把一个交易日进一步分成 10 个更小的时间间隔。它和 `ou_standard` 的总时间跨度基本一致：
+
+```text
+ou_standard:       100  * (1 / 252)
+ou_high_frequency: 1000 * (1 / 252 / 10)
+```
+
+两者都约等于 `100 / 252` 年，但 `ou_high_frequency` 有 10 倍的观测点。默认输出形状为：
+
+```text
+(1000, 1001, 1)
+```
+
+### `google`
+
+`google` 数据集不是模拟数据，而是通过 `yfinance` 下载 GOOGL 的真实日频股票数据，然后切成重叠滑动窗口。
+
+关键参数：
+
+| Parameter | Meaning |
+|---|---|
+| `ticker` | 股票代码。当前为 `GOOGL`。 |
+| `start_date` | 请求下载数据的开始日期。当前为 `2004-01-01`。 |
+| `end_date` | 请求下载数据的结束日期。当前为 `2019-12-31`。代码会把结束日期加一天传给 `yfinance`，以便包含该日期。 |
+| `features` | 每天保留的字段，包括 `High`、`Low`、`Open`、`Close`、`Adj Close` 和 `Volume`。 |
+| `window_length` | 滑动窗口长度。`24` 表示每个样本是一段连续 24 个交易日的数据。 |
+| `normalization` | 窗口归一化方法，可选 `"base_one"`、`"standard"` 或 `"none"`。 |
+| `train_frac` | 训练集比例。 |
+| `val_frac` | 验证集比例。 |
+| `shuffle` | 划分 train / validation / test 前是否打乱窗口样本。 |
+
+如果原始日频数据有 `T` 天，滑动窗口数量为：
+
+```text
+num_windows = T - window_length + 1
+```
+
+`features` 中的 6 个字段含义如下：
+
+| Feature | Meaning |
+|---|---|
+| `High` | 当日最高价。 |
+| `Low` | 当日最低价。 |
+| `Open` | 当日开盘价。 |
+| `Close` | 当日收盘价。 |
+| `Adj Close` | 复权收盘价。 |
+| `Volume` | 当日成交量。 |
+
+`normalization` 的三种模式：
+
+- `"base_one"`：每个窗口内，每个特征都除以该窗口第一个时间点的值，因此窗口第一行通常变成 1。
+- `"standard"`：对每个窗口、每个特征做标准化，即减去窗口均值再除以窗口标准差。
+- `"none"`：不做归一化。
+
+当前 README 中记录的 Google 缓存数据形状为：
+
+```text
+(3846, 24, 6)
+```
+
+即 3846 个窗口、每个窗口 24 天、每天 6 个特征。请求日期范围是 `2004-01-01` 到 `2019-12-31`，但缓存 metadata 中的实际可用起始日期是 `2004-08-19`。
+
 ## Parameter Scope
 
 这里的“参数”分成两类：
@@ -688,4 +855,3 @@ non-neural baseline:
 3. training time；
 4. generation time；
 5. benchmark metrics，例如 Wasserstein distance、ACF MSE、predictive score。
-
