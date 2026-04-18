@@ -34,6 +34,10 @@ Thumbs.db
 experiments/
 outputs/
 
+# Notebook-generated artifacts. Existing tracked benchmark caches remain tracked.
+notebook_outputs/**/visual_comparisons/
+notebook_outputs/**/datasets/stock_QQQ/
+
 # Large data files
 data/*.csv
 data/*.parquet

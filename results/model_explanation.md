@@ -192,7 +192,8 @@ num_windows = T - window_length + 1
 
 这里的“参数”分成两类：
 
-- **Trainable neural parameters**：神经网络中可训练的权重和偏置，例如 LSTM、GRU、Transformer、MLP denoiser、score network。
+- **Trainable neural parameters**：神经网络中可训练的权重和偏置，例如 LSTM、GRU、Transformer、MLP denoiser。
+- **Trainable potential parameters**：LightSB 这类 potential-based solver 中的 `log_alpha`、`r`、`S_log_diag`。
 - **Calibrated / non-neural state**：非神经校准对象，例如 local volatility surface、jump intensity/mean/std、Brownian bridge 的初末状态样本、数值 solver 配置。
 
 这两类不能简单混为一谈。比如 `numba_sb` 的神经参数量是 0，但它仍然存储训练数据的初末状态；SBTS 系列的神经参数量主要来自 drift/jump 网络，但模型复杂度还包括 jump detection、volatility calibration 和 SDE solver。
@@ -206,7 +207,7 @@ seq_len = 101
 n_features = 1
 ```
 
-如果换成 Google 数据集，`n_features=6`，部分模型参数量会变化；如果换成不同窗口长度，`lightsb` 的 score network 参数量也会变化，因为它会 flatten 整条窗口。
+如果换成 Google/stock 数据集，`n_features=6`，部分模型参数量会变化；如果换成不同窗口长度，`lightsb` 的 potential 参数量也会变化，因为它会 flatten 整条窗口。
 
 notebook 中还会覆盖部分训练轮数：
 
@@ -221,13 +222,13 @@ transformer_ar_epochs = 25
 
 ## Summary Table
 
-| Model | Type | Main architecture | Approx. trainable neural params |
+| Model | Type | Main architecture | Approx. trainable params |
 |---|---|---|---:|
 | `jd_sbts` | Jump-Diffusion SBTS | Static jumps + local volatility + LSTM drift + SDE solver | 215,809 |
 | `jd_sbts_f` | SBTS with feedback | `jd_sbts` + stress-factor volatility feedback | 215,809 |
 | `jd_sbts_neural` | SBTS with neural jumps | `jd_sbts` + LSTM jump-intensity network | 268,610 |
 | `jd_sbts_f_neural` | SBTS with feedback and neural jumps | Neural jumps + feedback stress factor | 268,610 |
-| `lightsb` | Light Schrodinger Bridge | Flattened window + time-conditioned MLP score network | 138,533 |
+| `lightsb` | Light Schrodinger Bridge | Flattened window + sum-exp quadratic/GMM potential | 4,060 potential params |
 | `numba_sb` | Brownian bridge baseline | Closed-form / Numba Markovian SB | 0 |
 | `timegan` | GAN baseline | GRU embedder/recovery/generator/supervisor/discriminator | 219,010 |
 | `diffusion_ts` | DDPM-style baseline | Time-conditioned MLP denoiser | 78,913 |
@@ -447,7 +448,7 @@ total trainable neural params ~= 268,610
 
 ## 5. `lightsb`
 
-`lightsb` 是 `LightSB`，实现在 `models/lightsb.py`。它是 Light Schrodinger Bridge 风格模型，使用 variance annealing、mini-batch OT 和 score matching。
+`lightsb` 是 `LightSB`，实现在 `models/lightsb.py`。当前版本改为更接近官方 LightSB 的 potential-based 实现：使用 sum-exp quadratic Schrodinger potential / Gaussian-mixture-like parameterization，并用 analytic convolution objective 训练。
 
 训练逻辑：
 
@@ -455,9 +456,10 @@ total trainable neural params ~= 268,610
 time-series window
   -> normalize
   -> flatten to high-dimensional vector
-  -> couple Gaussian source and data target via Sinkhorn OT
-  -> sample interpolated bridge points
-  -> train score network with score matching
+  -> treat Gaussian noise as source samples x0
+  -> treat flattened real windows as target samples x1
+  -> train potential by minimizing E[log C_theta(x0)] - E[log v_theta(x1)]
+  -> sample generated windows from the learned conditional GMM map
 ```
 
 对默认 `merton` 数据：
@@ -468,48 +470,45 @@ n_features = 1
 flat_dim = 101
 ```
 
-Score network 架构：
+Potential 参数化：
 
 ```text
-Time embedding:
-  Linear(1 -> 64)
-  SiLU
-  Linear(64 -> 64)
+K = lightsb_n_potentials
+D = flat_dim
 
-Main MLP:
-  input = flat_dim + 64
-  Linear(input -> 256)
-  SiLU
-  Linear(256 -> 256)
-  SiLU
-  Linear(256 -> flat_dim)
+log_alpha_raw: shape (K,)
+r:             shape (K, D)
+S_log_diag:    shape (K, D)
 ```
 
 默认关键参数：
 
 ```text
-lightsb_sigma_min = 0.01
-lightsb_sigma_max = 1.0
-lightsb_hidden_dim = 256
-lightsb_n_layers = 3
+lightsb_n_potentials = 20
+lightsb_epsilon = 1.0
+lightsb_s_diagonal_init = 0.1
+lightsb_sampling_batch_size = 512
+lightsb_init_centers_from_data = True
 lightsb_epochs = 25   # notebook override; factory default is 100
 lightsb_lr = 0.001
 lightsb_batch_size = 256
-lightsb_ot_epsilon = 0.1
-lightsb_n_steps = 50
+lightsb_grad_clip = 1.0
+lightsb_source_std = 1.0
 ```
 
 参数量：
 
 ```text
-score network params ~= 138,533
+potential params = K * (2 * flat_dim + 1)
+for merton: K=20, flat_dim=101 -> 4,060
+for stock/QQQ: K=20, flat_dim=360 -> 14,420
 ```
 
 复杂度 caveat：
 
-- 参数量只描述 score network。
-- 实际训练成本还受到 mini-batch OT / Sinkhorn 的影响。
-- 因为输入是 flatten 后的整条窗口，窗口越长，score network 输入输出维度越大。
+- 当前实现仍然是 window-level：输入空间是 flatten 后的整条窗口。
+- 它不是 autoregressive/path-level conditioning model，因此 benchmark 中仍使用 `shared_seed_only`。
+- 与官方 repo 一样，核心是 potential/GMM 风格参数化；本项目采用 diagonal quadratic matrices，避免额外依赖 full-matrix orthogonal parameterization。
 
 ## 6. `numba_sb`
 
@@ -567,6 +566,7 @@ EmbeddingNetwork:
 RecoveryNetwork:
   GRU(hidden_dim -> hidden_dim)
   Linear(hidden_dim -> output_dim)
+  Linear output for standard-normalized data; Sigmoid output for min-max data
 
 GeneratorNetwork:
   GRU(z_dim -> hidden_dim)
@@ -592,6 +592,22 @@ timegan_n_layers = 2
 timegan_epochs = 20   # notebook override; factory default is 50
 timegan_lr = 0.001
 timegan_batch_size = 128
+timegan_normalization = "standard"   # alternatives: "minmax"
+timegan_clip_output = False          # only applies to min-max mode
+timegan_gamma = 1.0
+timegan_moment_loss_weight = 100.0
+timegan_supervised_loss_weight = 100.0
+timegan_reconstruction_loss_weight = 10.0
+timegan_embedding_supervised_weight = 0.1
+timegan_discriminator_threshold = 0.15
+timegan_generator_steps = 2
+```
+
+当前默认使用 standard normalization 和线性 recovery 输出，避免在 log-return / heavy-tail 数据上把 TimeGAN 输出硬限制在训练样本的 min-max 区间内。如果要复现 `[0, 1]` min-max 训练方式，可以设置：
+
+```text
+timegan_normalization = "minmax"
+timegan_clip_output = True
 ```
 
 训练阶段：
@@ -823,7 +839,7 @@ config["transformer_ar_max_seq_len"] = max(
 
 ## Interpretation
 
-如果只比较 trainable neural parameters：
+如果只比较 trainable neural parameters / trainable potential parameters：
 
 ```text
 largest group:
@@ -832,19 +848,22 @@ largest group:
   jd_sbts / jd_sbts_f ~= 215,809
 
 middle group:
-  lightsb ~= 138,533
   diffusion_ts ~= 78,913
   transformer_ar ~= 67,265
   rnn ~= 50,497
 
 non-neural baseline:
   numba_sb = 0
+
+potential-based baseline:
+  lightsb ~= 4,060 potential params on merton
+  lightsb ~= 14,420 potential params on stock/QQQ windows
 ```
 
 但这个排序不能直接等价于“模型复杂度”或“计算成本”。原因是：
 
 - SBTS 系列还有 jump detection、local volatility surface、SDE solver。
-- LightSB 的训练成本很大程度来自 mini-batch OT / Sinkhorn，而不只是 score network 参数量。
+- LightSB 当前是 potential/GMM-style baseline，不再使用 score network；参数量随 `flat_dim` 和 `lightsb_n_potentials` 线性增长。
 - Diffusion 的生成成本与 reverse diffusion steps 相关。
 - NumbaSB 虽然没有神经参数，但会存储经验初末状态样本。
 

@@ -157,6 +157,8 @@ def import_new_modules():
 def import_visualization():
     """Import visualization modules."""
     try:
+        os.environ.setdefault('MPLCONFIGDIR', os.path.join('/tmp', 'matplotlib'))
+        os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
         from visualization import (
             set_style, plot_performance_metrics, plot_comprehensive_comparison,
             plot_correlation_distribution, plot_volatility_surface,
@@ -566,7 +568,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             real_returns = np.diff(real_eval, axis=1)
             if real_returns.ndim == 3:
                 real_returns = real_returns[:, :, 0]
-            gen_returns = np.diff(gen_data, axis=1)
+            gen_returns = np.diff(gen_eval, axis=1)
             if gen_returns.ndim == 3:
                 gen_returns = gen_returns[:, :, 0]
             real_stylized = modules['compute_stylized_facts_numba'](real_returns.flatten())
@@ -774,14 +776,14 @@ def parse_args():
     parser.add_argument(
         '--output', '-o',
         type=str,
-        default='experiments',
+        default=None,
         help='Output directory'
     )
     
     parser.add_argument(
         '--seed', '-s',
         type=int,
-        default=42,
+        default=None,
         help='Random seed'
     )
     
@@ -833,7 +835,7 @@ def main():
     if args.output:
         config['output_dir'] = args.output
     
-    if args.seed:
+    if args.seed is not None:
         config['seed'] = args.seed
     
     if args.quiet:

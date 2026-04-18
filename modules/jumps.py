@@ -527,6 +527,7 @@ class NeuralJumpDetector(JumpDetector):
         self.threshold = config.get('jump_threshold_std', 4.0)
         self.focal_alpha = config.get('focal_alpha', 0.25)
         self.focal_gamma = config.get('focal_gamma', 2.0)
+        self.verbose = config.get('verbose', True)
         
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
@@ -538,7 +539,8 @@ class NeuralJumpDetector(JumpDetector):
     def fit(
         self,
         data: np.ndarray,
-        time_grid: Optional[np.ndarray] = None
+        time_grid: Optional[np.ndarray] = None,
+        verbose: Optional[bool] = None
     ) -> 'NeuralJumpDetector':
         """
         Fit neural jump detector.
@@ -554,6 +556,9 @@ class NeuralJumpDetector(JumpDetector):
         Returns:
             self for method chaining
         """
+        if verbose is None:
+            verbose = self.verbose
+
         # Ensure 3D
         if data.ndim == 2:
             data = data[:, :, np.newaxis]
@@ -642,7 +647,7 @@ class NeuralJumpDetector(JumpDetector):
                 total_loss += loss.item()
                 n_batches += 1
             
-            if (epoch + 1) % 10 == 0:
+            if verbose and (epoch + 1) % 10 == 0:
                 avg_loss = total_loss / n_batches
                 print(f"  [Neural Jump] Epoch {epoch+1}/{self.epochs}, Loss: {avg_loss:.4f}")
         

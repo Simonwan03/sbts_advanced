@@ -35,7 +35,7 @@ The current registry contains 10 models:
 | `jd_sbts_f` | JD-SBTS with stress-factor feedback for jump-volatility interaction |
 | `jd_sbts_neural` | JD-SBTS with neural jump-intensity modeling |
 | `jd_sbts_f_neural` | JD-SBTS with both feedback and neural jumps |
-| `lightsb` | Light Schrödinger Bridge baseline |
+| `lightsb` | Light Schrödinger Bridge baseline with sum-exp quadratic potentials |
 | `numba_sb` | Fast Numba-accelerated Markovian SB baseline |
 | `timegan` | GRU-based TimeGAN baseline |
 | `diffusion_ts` | DDPM-style diffusion baseline for time series |

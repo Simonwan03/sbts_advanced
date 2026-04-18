@@ -1,23 +1,23 @@
 """
 Light Schrödinger Bridge (LightSB) Implementation
 
-Implements the LightSB algorithm from "Light Schrödinger Bridge" paper,
-which uses variance annealing for efficient training.
+Implements an official-style LightSB solver based on the public ICLR 2024
+Light Schrödinger Bridge code: sum-exp quadratic Schrödinger potentials with
+a Gaussian-mixture-like parameterization and an analytic convolution objective.
 
 Key Features:
-    - Variance Annealing: Gradually reduce noise during training
-    - Mini-batch OT: Efficient optimal transport computation
-    - Score Matching: Train score network to estimate drift
+    - Sum-exp quadratic Schrödinger potential
+    - Gaussian-mixture-like endpoint sampler
+    - Analytic log C(x0) - log v(x1) training objective
 
 Reference:
-    Korotin et al., "Light Schrödinger Bridge", ICLR 2023
+    Korotin et al., "Light Schrödinger Bridge", ICLR 2024
 
 Author: Manus AI
 """
 
 import numpy as np
-from typing import Dict, Any, Optional, Tuple, Union, List
-import warnings
+from typing import Dict, Any, Optional, List
 from numba import njit, prange
 
 from models.base import TimeSeriesGenerator
@@ -25,208 +25,157 @@ from models.base import TimeSeriesGenerator
 try:
     import torch
     import torch.nn as nn
-    import torch.nn.functional as F
-    from torch.utils.data import DataLoader, TensorDataset
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
 
 
-# ============================================
-# Numba-Accelerated Optimal Transport
-# ============================================
-
-@njit(cache=True, parallel=True)
-def _compute_cost_matrix_numba(
-    X: np.ndarray,
-    Y: np.ndarray
-) -> np.ndarray:
-    """
-    Compute squared Euclidean cost matrix.
-    
-    Args:
-        X: Source points (n, d)
-        Y: Target points (m, d)
-    
-    Returns:
-        Cost matrix (n, m)
-    """
-    n = X.shape[0]
-    m = Y.shape[0]
-    d = X.shape[1]
-    
-    C = np.zeros((n, m))
-    
-    for i in prange(n):
-        for j in range(m):
-            dist = 0.0
-            for k in range(d):
-                diff = X[i, k] - Y[j, k]
-                dist += diff * diff
-            C[i, j] = dist
-    
-    return C
-
-
-@njit(cache=True)
-def _sinkhorn_numba(
-    C: np.ndarray,
-    epsilon: float,
-    n_iter: int = 100,
-    tol: float = 1e-6
-) -> np.ndarray:
-    """
-    Sinkhorn algorithm for entropic optimal transport.
-    
-    Args:
-        C: Cost matrix (n, m)
-        epsilon: Regularization parameter
-        n_iter: Maximum iterations
-        tol: Convergence tolerance
-    
-    Returns:
-        Transport plan (n, m)
-    """
-    n, m = C.shape
-    
-    # Initialize
-    K = np.exp(-C / epsilon)
-    u = np.ones(n)
-    v = np.ones(m)
-    
-    a = np.ones(n) / n  # Source marginal
-    b = np.ones(m) / m  # Target marginal
-    
-    for _ in range(n_iter):
-        u_prev = u.copy()
-        
-        # Update u
-        Kv = np.dot(K, v)
-        u = a / (Kv + 1e-10)
-        
-        # Update v
-        Ku = np.dot(K.T, u)
-        v = b / (Ku + 1e-10)
-        
-        # Check convergence
-        if np.max(np.abs(u - u_prev)) < tol:
-            break
-    
-    # Compute transport plan
-    P = np.outer(u, v) * K
-    
-    return P
-
-
-@njit(cache=True)
-def _sample_coupling_numba(
-    P: np.ndarray,
-    n_samples: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Sample from transport plan.
-    
-    Args:
-        P: Transport plan (n, m)
-        n_samples: Number of samples
-    
-    Returns:
-        Tuple of (source_indices, target_indices)
-    """
-    n, m = P.shape
-    
-    # Flatten and normalize
-    P_flat = P.flatten()
-    P_flat = P_flat / P_flat.sum()
-    
-    # Sample indices
-    cumsum = np.cumsum(P_flat)
-    source_idx = np.zeros(n_samples, dtype=np.int64)
-    target_idx = np.zeros(n_samples, dtype=np.int64)
-    
-    for i in range(n_samples):
-        r = np.random.random()
-        idx = np.searchsorted(cumsum, r)
-        idx = min(idx, len(P_flat) - 1)
-        
-        source_idx[i] = idx // m
-        target_idx[i] = idx % m
-    
-    return source_idx, target_idx
-
-
-# ============================================
-# Score Network
-# ============================================
-
 if TORCH_AVAILABLE:
-    
-    class ScoreNetwork(nn.Module):
+
+    class QuadraticPotentialBridge(nn.Module):
+        """Official-style LightSB potential parameterization.
+
+        This follows the public LightSB implementation pattern: a sum-exp
+        quadratic/log-potential parameterized as a Gaussian-mixture-like family.
+        The implementation uses diagonal quadratic matrices to avoid adding the
+        official repo's optional orthogonal-matrix dependency.
         """
-        Score network for estimating ∇ log p_t(x).
-        
-        Uses a time-conditioned MLP architecture.
-        """
-        
+
         def __init__(
             self,
-            input_dim: int,
-            hidden_dim: int = 256,
-            n_layers: int = 3,
-            time_embed_dim: int = 64
+            dim: int,
+            n_potentials: int = 20,
+            epsilon: float = 1.0,
+            sampling_batch_size: int = 512,
+            s_diagonal_init: float = 0.1,
         ):
             super().__init__()
-            
-            self.input_dim = input_dim
-            self.time_embed_dim = time_embed_dim
-            
-            # Time embedding
-            self.time_embed = nn.Sequential(
-                nn.Linear(1, time_embed_dim),
-                nn.SiLU(),
-                nn.Linear(time_embed_dim, time_embed_dim)
+            self.dim = int(dim)
+            self.n_potentials = int(n_potentials)
+            self.sampling_batch_size = int(sampling_batch_size)
+
+            self.register_buffer("epsilon", torch.tensor(float(epsilon)))
+            init_weights = torch.ones(self.n_potentials) / self.n_potentials
+            self.log_alpha_raw = nn.Parameter(self.epsilon * torch.log(init_weights))
+            self.r = nn.Parameter(torch.randn(self.n_potentials, self.dim))
+            self.s_log_diagonal = nn.Parameter(
+                torch.log(float(s_diagonal_init) * torch.ones(self.n_potentials, self.dim))
             )
-            
-            # Main network
-            layers = []
-            in_dim = input_dim + time_embed_dim
-            
-            for i in range(n_layers):
-                out_dim = hidden_dim if i < n_layers - 1 else input_dim
-                layers.extend([
-                    nn.Linear(in_dim, out_dim),
-                    nn.SiLU() if i < n_layers - 1 else nn.Identity()
-                ])
-                in_dim = hidden_dim
-            
-            self.net = nn.Sequential(*layers)
-        
-        def forward(
+
+        def init_r_by_samples(self, samples: torch.Tensor) -> None:
+            """Initialize potential centers from target samples when available."""
+            if len(samples) == 0:
+                return
+            if len(samples) >= self.n_potentials:
+                idx = torch.randperm(len(samples), device=samples.device)[: self.n_potentials]
+            else:
+                idx = torch.randint(len(samples), (self.n_potentials,), device=samples.device)
+            with torch.no_grad():
+                self.r.copy_(samples[idx].to(self.r.device))
+
+        def get_s(self) -> torch.Tensor:
+            return torch.exp(self.s_log_diagonal)
+
+        def get_log_alpha(self) -> torch.Tensor:
+            return self.log_alpha_raw / self.epsilon
+
+        def _component_logits(self, x: torch.Tensor) -> torch.Tensor:
+            s = self.get_s()
+            r = self.r
+            eps = self.epsilon
+            log_alpha = self.get_log_alpha()
+            x_s_x = (x[:, None, :] * s[None, :, :] * x[:, None, :]).sum(dim=-1)
+            x_r = (x[:, None, :] * r[None, :, :]).sum(dim=-1)
+            return (x_s_x + 2.0 * x_r) / (2.0 * eps) + log_alpha[None, :]
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            """Sample target endpoint from the learned conditional map."""
+            s = self.get_s()
+            eps_s = self.epsilon * s
+            samples = []
+            batch_size = x.shape[0]
+            step = max(1, self.sampling_batch_size)
+
+            for start in range(0, batch_size, step):
+                sub_x = x[start : start + step]
+                logits = self._component_logits(sub_x)
+                loc = self.r[None, :, :] + s[None, :, :] * sub_x[:, None, :]
+                scale = torch.sqrt(eps_s)[None, :, :]
+                mix = torch.distributions.Categorical(logits=logits)
+                comp = torch.distributions.Independent(
+                    torch.distributions.Normal(loc=loc, scale=scale),
+                    1,
+                )
+                samples.append(torch.distributions.MixtureSameFamily(mix, comp).sample())
+            return torch.cat(samples, dim=0)
+
+        def get_log_potential(self, x: torch.Tensor) -> torch.Tensor:
+            """Evaluate the unnormalized log-Schrodinger potential at target samples."""
+            log_alpha = self.get_log_alpha()
+            mix = torch.distributions.Categorical(logits=log_alpha)
+            comp = torch.distributions.Independent(
+                torch.distributions.Normal(
+                    loc=self.r,
+                    scale=torch.sqrt(self.epsilon * self.get_s()),
+                ),
+                1,
+            )
+            gmm = torch.distributions.MixtureSameFamily(mix, comp)
+            return gmm.log_prob(x) + torch.logsumexp(log_alpha, dim=-1)
+
+        def get_log_c(self, x: torch.Tensor) -> torch.Tensor:
+            """Evaluate the analytic convolution term at source samples."""
+            return torch.logsumexp(self._component_logits(x), dim=-1)
+
+        def get_drift(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            """Evaluate the bridge drift used by the official Euler sampler."""
+            if t.dim() == 0:
+                t = t.expand(x.shape[0])
+            x_var = x.detach().clone().requires_grad_(True)
+            eps = self.epsilon
+            s = self.get_s()
+            r = self.r
+            log_alpha = self.get_log_alpha()
+
+            one_minus_t = torch.clamp(1.0 - t, min=1e-4)
+            a = t[:, None, None] / (eps * one_minus_t[:, None, None]) + 1.0 / (
+                eps * s[None, :, :]
+            )
+            s_log_det = self.s_log_diagonal.sum(dim=-1)
+            a_log_det = torch.log(a).sum(dim=-1)
+            s_inv = 1.0 / s
+            a_inv = 1.0 / a
+            c = (
+                (x_var / (eps * one_minus_t[:, None]))[:, None, :]
+                + (r * s_inv / eps)[None, :, :]
+            )
+            exp_arg = (
+                log_alpha[None, :]
+                - 0.5 * s_log_det[None, :]
+                - 0.5 * a_log_det
+                - 0.5 * ((r * s_inv * r) / eps).sum(dim=-1)[None, :]
+                + 0.5 * (c * a_inv * c).sum(dim=-1)
+            )
+            lse = torch.logsumexp(exp_arg, dim=-1)
+            grad = torch.autograd.grad(lse.sum(), x_var, create_graph=False)[0]
+            return (-x_var / one_minus_t[:, None] + eps * grad).detach()
+
+        def sample_euler_maruyama(
             self,
             x: torch.Tensor,
-            t: torch.Tensor
+            n_steps: int,
         ) -> torch.Tensor:
-            """
-            Forward pass.
-            
-            Args:
-                x: Input (batch, input_dim)
-                t: Time (batch, 1) or (batch,)
-            
-            Returns:
-                Score estimate (batch, input_dim)
-            """
-            if t.dim() == 1:
-                t = t.unsqueeze(-1)
-            
-            # Time embedding
-            t_embed = self.time_embed(t)
-            
-            # Concatenate and forward
-            h = torch.cat([x, t_embed], dim=-1)
-            score = self.net(h)
-            
-            return score
+            """Sample a bridge trajectory with the official Euler-Maruyama recipe."""
+            t = torch.zeros(x.shape[0], device=x.device)
+            dt = 1.0 / int(n_steps)
+            trajectory = [x]
+            for _ in range(int(n_steps)):
+                drift = self.get_drift(x, t)
+                noise = torch.randn_like(x) * np.sqrt(dt) * torch.sqrt(self.epsilon)
+                x = x + drift * dt + noise
+                t = torch.clamp(t + dt, max=1.0 - 1e-4)
+                trajectory.append(x)
+            return torch.stack(trajectory, dim=1)
 
 
 # ============================================
@@ -235,15 +184,12 @@ if TORCH_AVAILABLE:
 
 class LightSB(TimeSeriesGenerator):
     """
-    Light Schrödinger Bridge for Time Series Generation.
-    
-    Uses variance annealing and mini-batch optimal transport for
-    efficient training of Schrödinger Bridge.
-    
-    Key Components:
-        1. Variance Schedule: σ(t) = σ_min + (σ_max - σ_min) * t
-        2. Mini-batch OT: Sinkhorn algorithm for coupling
-        3. Score Matching: Train score network on interpolated samples
+    Official-style Light Schrödinger Bridge for time-series windows.
+
+    The model follows the public LightSB solver design: it learns a
+    Gaussian-mixture-like sum-exp quadratic Schrödinger potential and uses the
+    analytic LightSB objective log C(x0) - log v(x1). In this repository each
+    time-series window is treated as one high-dimensional point.
     
     Usage:
         model = LightSB(config)
@@ -258,90 +204,37 @@ class LightSB(TimeSeriesGenerator):
         Initialize LightSB model.
         
         Args:
-            config: Configuration with keys:
-                - lightsb_sigma_min: Minimum noise level (default: 0.01)
-                - lightsb_sigma_max: Maximum noise level (default: 1.0)
-                - lightsb_hidden_dim: Score network hidden dim (default: 256)
-                - lightsb_n_layers: Score network layers (default: 3)
-                - lightsb_epochs: Training epochs (default: 100)
-                - lightsb_lr: Learning rate (default: 0.001)
-                - lightsb_batch_size: Batch size (default: 256)
-                - lightsb_ot_epsilon: OT regularization (default: 0.1)
-                - lightsb_n_steps: Number of diffusion steps (default: 50)
+            config: Configuration with LightSB hyperparameters.
         """
         super().__init__(config)
         
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch required for LightSB")
         
-        self.sigma_min = config.get('lightsb_sigma_min', 0.01)
-        self.sigma_max = config.get('lightsb_sigma_max', 1.0)
-        self.hidden_dim = config.get('lightsb_hidden_dim', 256)
-        self.n_layers = config.get('lightsb_n_layers', 3)
+        self.n_potentials = config.get('lightsb_n_potentials', 20)
+        self.epsilon = config.get('lightsb_epsilon', config.get('lightsb_ot_epsilon', 1.0))
+        self.s_diagonal_init = config.get('lightsb_s_diagonal_init', 0.1)
+        self.sampling_batch_size = config.get('lightsb_sampling_batch_size', 512)
+        self.init_centers_from_data = config.get('lightsb_init_centers_from_data', True)
         self.epochs = config.get('lightsb_epochs', 100)
         self.lr = config.get('lightsb_lr', 0.001)
         self.batch_size = config.get('lightsb_batch_size', 256)
-        self.ot_epsilon = config.get('lightsb_ot_epsilon', 0.1)
-        self.n_steps = config.get('lightsb_n_steps', 50)
+        self.weight_decay = config.get('lightsb_weight_decay', 0.0)
+        self.grad_clip = config.get('lightsb_grad_clip', 1.0)
+        self.source_std = config.get('lightsb_source_std', 1.0)
         
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Model components
-        self.score_net = None
+        self.bridge = None
         self.n_features = None
         self.seq_len = None
+        self.flat_dim = None
         self.data_mean = None
         self.data_std = None
         
         # Training history
         self.train_losses = []
-    
-    def _get_sigma(self, t: torch.Tensor) -> torch.Tensor:
-        """Get noise level at time t."""
-        return self.sigma_min + (self.sigma_max - self.sigma_min) * t
-    
-    def _interpolate(
-        self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        t: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Interpolate between x0 and x1 at time t.
-        
-        Uses the formula: x_t = (1-t)*x0 + t*x1 + σ(t)*ε
-        """
-        sigma = self._get_sigma(t)
-        noise = torch.randn_like(x0)
-        
-        # Reshape t for broadcasting
-        while t.dim() < x0.dim():
-            t = t.unsqueeze(-1)
-        while sigma.dim() < x0.dim():
-            sigma = sigma.unsqueeze(-1)
-        
-        x_t = (1 - t) * x0 + t * x1 + sigma * noise
-        
-        return x_t, noise
-    
-    def _compute_target_score(
-        self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        x_t: torch.Tensor,
-        t: torch.Tensor,
-        noise: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute target score for training.
-        
-        Target: ∇ log p_t(x_t | x0, x1) = -noise / σ(t)
-        """
-        sigma = self._get_sigma(t)
-        while sigma.dim() < noise.dim():
-            sigma = sigma.unsqueeze(-1)
-        
-        return -noise / (sigma + 1e-8)
     
     def fit(
         self,
@@ -351,11 +244,6 @@ class LightSB(TimeSeriesGenerator):
     ) -> 'LightSB':
         """
         Fit LightSB model.
-        
-        Training Process:
-            1. Compute mini-batch OT coupling between consecutive time slices
-            2. Sample interpolated points along the bridge
-            3. Train score network to match target score
         
         Args:
             data: Time series data (n_samples, seq_len, n_features)
@@ -372,32 +260,37 @@ class LightSB(TimeSeriesGenerator):
         n_samples, seq_len, n_features = data.shape
         self.n_features = n_features
         self.seq_len = seq_len
+        self.flat_dim = seq_len * n_features
         
         # Normalize data
         self.data_mean = np.mean(data)
         self.data_std = np.std(data) + 1e-8
         data_norm = (data - self.data_mean) / self.data_std
         
-        # Flatten time series for training
-        # Treat each time series as a single high-dimensional point
-        flat_dim = seq_len * n_features
-        data_flat = data_norm.reshape(n_samples, flat_dim)
-        
-        # Create source (noise) and target (data) distributions
-        X_target = torch.tensor(data_flat, dtype=torch.float32).to(self.device)
-        
-        # Initialize score network
-        self.score_net = ScoreNetwork(
-            input_dim=flat_dim,
-            hidden_dim=self.hidden_dim,
-            n_layers=self.n_layers
+        # Treat each full window as one high-dimensional target point.
+        data_flat = data_norm.reshape(n_samples, self.flat_dim)
+        x_target = torch.tensor(data_flat, dtype=torch.float32, device=self.device)
+
+        self.bridge = QuadraticPotentialBridge(
+            dim=self.flat_dim,
+            n_potentials=self.n_potentials,
+            epsilon=self.epsilon,
+            sampling_batch_size=self.sampling_batch_size,
+            s_diagonal_init=self.s_diagonal_init,
         ).to(self.device)
+
+        if self.init_centers_from_data:
+            self.bridge.init_r_by_samples(x_target)
         
-        optimizer = torch.optim.Adam(self.score_net.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(
+            self.bridge.parameters(),
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+        )
         
         if verbose:
             print("=" * 60)
-            print("LightSB Training")
+            print("LightSB Training (official-style potential)")
             print("=" * 60)
         
         self.train_losses = []
@@ -408,46 +301,21 @@ class LightSB(TimeSeriesGenerator):
             
             # Shuffle data
             perm = torch.randperm(n_samples)
-            X_target = X_target[perm]
+            x_target_epoch = x_target[perm]
             
             for i in range(0, n_samples, self.batch_size):
-                batch_target = X_target[i:i+self.batch_size]
+                batch_target = x_target_epoch[i:i+self.batch_size]
                 batch_size = len(batch_target)
                 
-                # Sample source (noise)
-                batch_source = torch.randn_like(batch_target)
-                
-                # Compute OT coupling using Numba
-                C = _compute_cost_matrix_numba(
-                    batch_source.cpu().numpy(),
-                    batch_target.cpu().numpy()
-                )
-                P = _sinkhorn_numba(C, self.ot_epsilon)
-                
-                # Sample from coupling
-                src_idx, tgt_idx = _sample_coupling_numba(P, batch_size)
-                
-                x0 = batch_source[src_idx]
-                x1 = batch_target[tgt_idx]
-                
-                # Sample random time
-                t = torch.rand(batch_size, device=self.device)
-                
-                # Interpolate
-                x_t, noise = self._interpolate(x0, x1, t)
-                
-                # Compute target score
-                target_score = self._compute_target_score(x0, x1, x_t, t, noise)
-                
-                # Forward pass
+                batch_source = self.source_std * torch.randn_like(batch_target)
                 optimizer.zero_grad()
-                pred_score = self.score_net(x_t, t)
-                
-                # Score matching loss
-                loss = F.mse_loss(pred_score, target_score)
+                loss = (
+                    self.bridge.get_log_c(batch_source).mean()
+                    - self.bridge.get_log_potential(batch_target).mean()
+                )
                 loss.backward()
-                
-                torch.nn.utils.clip_grad_norm_(self.score_net.parameters(), 1.0)
+                if self.grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(self.bridge.parameters(), self.grad_clip)
                 optimizer.step()
                 
                 epoch_loss += loss.item()
@@ -459,7 +327,7 @@ class LightSB(TimeSeriesGenerator):
             if verbose and (epoch + 1) % 20 == 0:
                 print(f"  [LightSB] Epoch {epoch+1}/{self.epochs}, Loss: {avg_loss:.6f}")
         
-        self.score_net.eval()
+        self.bridge.eval()
         self.is_fitted = True
         
         if verbose:
@@ -478,12 +346,12 @@ class LightSB(TimeSeriesGenerator):
         """
         Generate synthetic time series.
         
-        Uses the trained score network to simulate the reverse SDE.
+        Samples target endpoints from the learned LightSB conditional map.
         
         Args:
             n_samples: Number of samples to generate
-            n_steps: Number of diffusion steps (default: self.n_steps)
-            x0: Initial noise (default: sample from N(0, I))
+            n_steps: Ignored for output length; kept for API compatibility
+            x0: Optional flattened source noise of shape (n_samples, seq_len*n_features)
         
         Returns:
             Generated time series (n_samples, seq_len, n_features)
@@ -491,45 +359,28 @@ class LightSB(TimeSeriesGenerator):
         if not self.is_fitted:
             raise RuntimeError("Model must be fitted before generation")
         
-        if n_steps is None:
-            n_steps = self.n_steps
-        
-        flat_dim = self.seq_len * self.n_features
-        
-        # Initialize from noise
+        del n_steps
+
         if x0 is None:
-            x = torch.randn(n_samples, flat_dim, device=self.device)
+            source = self.source_std * torch.randn(n_samples, self.flat_dim, device=self.device)
         else:
-            x = torch.tensor(x0, dtype=torch.float32, device=self.device)
+            source_np = np.asarray(x0, dtype=np.float32)
+            if source_np.ndim == 3:
+                source_np = source_np.reshape(source_np.shape[0], -1)
+            if source_np.ndim != 2 or source_np.shape != (n_samples, self.flat_dim):
+                raise ValueError(
+                    "LightSB x0 is source noise and must have shape "
+                    f"({n_samples}, {self.flat_dim}) or "
+                    f"({n_samples}, {self.seq_len}, {self.n_features})"
+                )
+            source = torch.tensor(source_np, dtype=torch.float32, device=self.device)
         
-        # Time steps
-        dt = 1.0 / n_steps
-        
-        self.score_net.eval()
-        
+        self.bridge.eval()
         with torch.no_grad():
-            for i in range(n_steps):
-                t = torch.full((n_samples,), i * dt, device=self.device)
-                
-                # Get score
-                score = self.score_net(x, t)
-                
-                # Get sigma
-                sigma = self._get_sigma(t).unsqueeze(-1)
-                
-                # Euler-Maruyama step (reverse SDE)
-                # dx = [drift + σ² * score] dt + σ dW
-                drift = score * sigma ** 2
-                noise = torch.randn_like(x) * np.sqrt(dt)
-                
-                x = x + drift * dt + sigma * noise
+            target = self.bridge(source)
         
-        # Reshape and denormalize
-        x = x.cpu().numpy()
-        x = x.reshape(n_samples, self.seq_len, self.n_features)
-        x = x * self.data_std + self.data_mean
-        
-        return x
+        generated = target.cpu().numpy().reshape(n_samples, self.seq_len, self.n_features)
+        return generated * self.data_std + self.data_mean
     
     def get_training_history(self) -> List[float]:
         """Get training loss history."""

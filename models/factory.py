@@ -129,7 +129,7 @@ def list_models() -> Dict[str, str]:
         'jd_sbts_f': 'JD-SBTS with Feedback mechanism (volatility clustering)',
         'jd_sbts_neural': 'JD-SBTS with Neural jump detection',
         'jd_sbts_f_neural': 'JD-SBTS with Feedback + Neural jumps',
-        'lightsb': 'Light Schrödinger Bridge (variance annealing)',
+        'lightsb': 'Light Schrödinger Bridge (sum-exp quadratic potentials)',
         'numba_sb': 'Numba-accelerated Markovian SB (fast baseline)',
         'timegan': 'TimeGAN (Yoon et al., NeurIPS 2019)',
         'diffusion_ts': 'Diffusion model for time series',
@@ -166,6 +166,12 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
             'jump_threshold_std': 4.0,
             'jump_rolling_window': 20,
             'use_neural_jumps': 'neural' in model_type,
+            'neural_jump_hidden_dim': 64,
+            'neural_jump_epochs': 30,
+            'neural_jump_lr': 0.001,
+            'neural_jump_seq_len': 10,
+            'focal_alpha': 0.25,
+            'focal_gamma': 2.0,
             
             # Volatility calibration
             'vol_bandwidth': 0.5,
@@ -191,15 +197,17 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
     
     elif model_type == 'lightsb':
         base_config.update({
-            'lightsb_sigma_min': 0.01,
-            'lightsb_sigma_max': 1.0,
-            'lightsb_hidden_dim': 256,
-            'lightsb_n_layers': 3,
+            'lightsb_n_potentials': 20,
+            'lightsb_epsilon': 1.0,
+            'lightsb_s_diagonal_init': 0.1,
+            'lightsb_sampling_batch_size': 512,
+            'lightsb_init_centers_from_data': True,
             'lightsb_epochs': 100,
             'lightsb_lr': 0.001,
             'lightsb_batch_size': 256,
-            'lightsb_ot_epsilon': 0.1,
-            'lightsb_n_steps': 50,
+            'lightsb_weight_decay': 0.0,
+            'lightsb_grad_clip': 1.0,
+            'lightsb_source_std': 1.0,
         })
     
     elif model_type == 'numba_sb':
@@ -215,6 +223,15 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
             'timegan_epochs': 50,
             'timegan_lr': 0.001,
             'timegan_batch_size': 128,
+            'timegan_normalization': 'standard',
+            'timegan_gamma': 1.0,
+            'timegan_moment_loss_weight': 100.0,
+            'timegan_supervised_loss_weight': 100.0,
+            'timegan_reconstruction_loss_weight': 10.0,
+            'timegan_embedding_supervised_weight': 0.1,
+            'timegan_discriminator_threshold': 0.15,
+            'timegan_generator_steps': 2,
+            'timegan_clip_output': False,
         })
     
     elif model_type == 'diffusion_ts':

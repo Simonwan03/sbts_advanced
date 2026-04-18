@@ -394,8 +394,9 @@ def plot_model_comparison_grid(
     
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
     
-    if n_rows == 1:
-        axes = axes.reshape(1, -1)
+    axes = np.asarray(axes)
+    if axes.ndim == 1:
+        axes = axes.reshape(n_rows, n_cols)
     
     # Flatten real data if needed
     if real_data.ndim == 3:
@@ -445,9 +446,11 @@ def plot_model_comparison_grid(
         axes[row, col].axis('off')
     
     # Bottom rows: Metrics comparison
+    used_metric_axes = set()
     if metrics_dict:
         # Bar chart of WD
         ax = axes[-2, 0]
+        used_metric_axes.add((n_rows - 2, 0))
         models = list(metrics_dict.keys())
         wd_values = [metrics_dict[m].get('wasserstein_distance', 0) for m in models]
         colors = [_get_style(m)['color'] for m in models]
@@ -464,6 +467,7 @@ def plot_model_comparison_grid(
         
         # Bar chart of ACF MSE
         ax = axes[-2, 1] if n_cols > 1 else axes[-1, 0]
+        used_metric_axes.add((n_rows - 2, 1) if n_cols > 1 else (n_rows - 1, 0))
         acf_values = [metrics_dict[m].get('acf_mse', 0) for m in models]
         
         bars = ax.bar(range(len(models)), acf_values, color=colors)
@@ -478,6 +482,7 @@ def plot_model_comparison_grid(
         # Radar chart or additional metrics
         if n_cols > 2:
             ax = axes[-2, 2]
+            used_metric_axes.add((n_rows - 2, 2))
             disc_values = [metrics_dict[m].get('discriminative_score', 0.5) for m in models]
             
             bars = ax.bar(range(len(models)), disc_values, color=colors)
@@ -495,7 +500,7 @@ def plot_model_comparison_grid(
     # Hide remaining axes
     for row in range(n_rows - 2, n_rows):
         for col in range(n_cols):
-            if row == n_rows - 1 or (row == n_rows - 2 and col >= 3):
+            if (row, col) not in used_metric_axes:
                 axes[row, col].axis('off')
     
     plt.tight_layout()
